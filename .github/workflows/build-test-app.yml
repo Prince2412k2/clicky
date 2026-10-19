@@ -1,0 +1,53 @@
+name: Build Clicky Test App
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - build/github-actions-artifact
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build Clicky
+        run: |
+          xcodebuild \
+            -project leanring-buddy.xcodeproj \
+            -scheme leanring-buddy \
+            -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/ClickyDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Ad-hoc sign application
+        run: |
+          codesign \
+            --force \
+            --deep \
+            --sign - \
+            --entitlements leanring-buddy/leanring-buddy.entitlements \
+            "$RUNNER_TEMP/ClickyDerivedData/Build/Products/Debug/leanring-buddy.app"
+
+      - name: Package application
+        run: |
+          ditto \
+            -c \
+            -k \
+            --sequesterRsrc \
+            --keepParent \
+            "$RUNNER_TEMP/ClickyDerivedData/Build/Products/Debug/leanring-buddy.app" \
+            "$RUNNER_TEMP/Clicky-Test-Build.zip"
+
+      - name: Upload application
+        uses: actions/upload-artifact@v4
+        with:
+          name: Clicky-Test-Build
+          path: ${{ runner.temp }}/Clicky-Test-Build.zip
+          if-no-files-found: error
+          retention-days: 14
