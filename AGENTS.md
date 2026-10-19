@@ -18,6 +18,7 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+); voice captures the pointer's display and screenshot prompts capture the frontmost window
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: The selected model embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
+- **Teaching Annotations**: Provider-independent `[DRAW:...]` tags render temporary click-through arrows, boxes, highlights, pointers, and labels over the relevant screen or window.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
 - **Privacy**: No telemetry, email collection, automatic login item, creator service, or mandatory proxy
 
@@ -46,6 +47,7 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 | `OverlayWindow.swift` | ~700 | Full-screen transparent cursor, response, waveform, spinner, and pointing overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~220 | Pointer-display and frontmost-window capture using ScreenCaptureKit. |
 | `ScreenshotPromptWindow.swift` | ~280 | Annotatable frontmost-window preview and Spotlight-style prompt composer. |
+| `ScreenAnnotation.swift` | ~230 | Drawing-tag parser and click-through teaching overlay for arrows, boxes, highlights, pointers, and labels. |
 | `ChatGPTAuthenticationManager.swift` | ~650 | ChatGPT OAuth registration, PKCE, ID-token verification, Keychain storage, refresh, recovery, and revocation. |
 | `OpenAIResponsesAPI.swift` | ~180 | ChatGPT-plan model discovery and streaming public Responses API client. |
 | `OpenClickyServices.swift` | ~430 | Provider definitions, secure API-key storage, model discovery, and direct OpenAI/Anthropic/Gemini/Ollama clients. |

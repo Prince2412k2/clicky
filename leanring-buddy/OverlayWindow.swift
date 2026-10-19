@@ -164,6 +164,14 @@ struct BlueCursorView: View {
             // Nearly transparent background (helps with compositing)
             Color.black.opacity(0.001)
 
+            ForEach(companionManager.screenAnnotations) { annotation in
+                if screenFrame.intersects(annotation.displayFrame)
+                    || screenFrame.contains(annotation.startLocation)
+                    || screenFrame.contains(annotation.endLocation) {
+                    TeachingAnnotationOverlay(annotation: annotation, screenFrame: screenFrame)
+                }
+            }
+
             // Navigation pointer bubble — shown when buddy arrives at a detected element.
             // Pops in with a scale-bounce (0.5x → 1.0x spring) and a bright initial
             // glow that settles, creating a "materializing" effect.

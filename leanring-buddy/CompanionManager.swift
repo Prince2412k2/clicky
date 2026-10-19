@@ -41,6 +41,7 @@ final class CompanionManager: ObservableObject {
     /// Custom speech bubble text for the pointing animation. When set,
     /// BlueCursorView uses this instead of a random pointer phrase.
     @Published var detectedElementBubbleText: String?
+    @Published private(set) var screenAnnotations: [ScreenAnnotation] = []
 
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
@@ -79,6 +80,7 @@ final class CompanionManager: ObservableObject {
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
+    private var annotationClearTask: Task<Void, Never>?
 
     /// True when all three required permissions (accessibility, screen recording,
     /// microphone) are granted. Used by the panel to show a single "all good" state.
@@ -161,6 +163,7 @@ final class CompanionManager: ObservableObject {
         conversationHistory.removeAll()
         displayedResponseText = ""
         clearDetectedElementLocation()
+        clearScreenAnnotations()
     }
 
     func refreshAvailableModels() {
@@ -243,6 +246,7 @@ final class CompanionManager: ObservableObject {
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
         transientHideTask?.cancel()
+        annotationClearTask?.cancel()
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
@@ -255,10 +259,6 @@ final class CompanionManager: ObservableObject {
     }
 
     func refreshAllPermissions() {
-        let previouslyHadAccessibility = hasAccessibilityPermission
-        let previouslyHadScreenRecording = hasScreenRecordingPermission
-        let previouslyHadMicrophone = hasMicrophonePermission
-
         let currentlyHasAccessibility = WindowPositionManager.hasAccessibilityPermission()
         hasAccessibilityPermission = currentlyHasAccessibility
 
@@ -272,12 +272,6 @@ final class CompanionManager: ObservableObject {
 
         let micAuthStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         hasMicrophonePermission = micAuthStatus == .authorized
-
-        // Debug: log permission state on changes
-        if previouslyHadAccessibility != hasAccessibilityPermission
-            || previouslyHadScreenRecording != hasScreenRecordingPermission
-            || previouslyHadMicrophone != hasMicrophonePermission {
-        }
 
         // Screen content permission is persisted — once the user has approved the
         // SCShareableContent picker, we don't need to re-check it.
@@ -509,6 +503,17 @@ final class CompanionManager: ObservableObject {
 
     if pointing wouldn't help, append [POINT:none].
 
+    teaching annotations:
+    when visual guidance would help, draw directly over the shared screenshot with up to four DRAW tags. put every tag at the very end of the response after the POINT tag. coordinates use the screenshot's top-left pixel origin.
+
+    available tags:
+    - [DRAW:arrow:startX,startY,endX,endY:short label] draws an arrow toward a target.
+    - [DRAW:box:x,y,width,height:short label] outlines a UI region.
+    - [DRAW:highlight:x,y,width,height:short label] softly highlights a region.
+    - [DRAW:pointer:x,y:short label] places a pulsing pointer.
+
+    use annotations to teach multi-step spatial ideas, compare areas, or make a target unmistakable. keep labels to one through four words. do not draw when the question is unrelated to the screenshot. never invent coordinates outside the supplied image dimensions.
+
     examples:
     - user asks how to color grade in final cut: "you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector]"
     - user asks what html is: "html stands for hypertext markup language, it's basically the skeleton of every web page. curious how it connects to the css you're looking at? [POINT:none]"
@@ -527,6 +532,7 @@ final class CompanionManager: ObservableObject {
     ) {
         currentResponseTask?.cancel()
         systemTTSClient.stopPlayback()
+        clearScreenAnnotations()
 
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
@@ -586,7 +592,8 @@ final class CompanionManager: ObservableObject {
                 guard !Task.isCancelled else { return }
 
                 // Parse the provider-independent [POINT:...] tag.
-                let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
+                let annotationParseResult = ScreenAnnotationParser.parse(from: fullResponseText)
+                let parseResult = Self.parsePointingCoordinates(from: annotationParseResult.responseText)
                 let spokenText = parseResult.spokenText
                 displayedResponseText = spokenText
 
@@ -609,37 +616,33 @@ final class CompanionManager: ObservableObject {
                     return screenCaptures.first(where: { $0.isCursorScreen })
                 }()
 
+                if let targetScreenCapture {
+                    screenAnnotations = annotationParseResult.annotations.compactMap { parsedAnnotation in
+                        Self.makeScreenAnnotation(
+                            from: parsedAnnotation,
+                            screenCapture: targetScreenCapture
+                        )
+                    }
+                    if screenAnnotations.isEmpty,
+                       let pointCoordinate = parseResult.coordinate {
+                        screenAnnotations = [Self.makePointerAnnotation(
+                            pointCoordinate: pointCoordinate,
+                            label: parseResult.elementLabel,
+                            screenCapture: targetScreenCapture
+                        )]
+                    }
+                    scheduleAnnotationClearIfNeeded()
+                }
+
                 if let pointCoordinate = parseResult.coordinate,
                    let targetScreenCapture {
-                    // Model coordinates are in the screenshot's pixel space
-                    // (top-left origin, e.g. 1280x831). Scale to the display's
-                    // point space (e.g. 1512x982), then convert to AppKit global coords.
-                    let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
-                    let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
-                    let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
-                    let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
-                    let displayFrame = targetScreenCapture.displayFrame
-
-                    // Clamp to screenshot coordinate space
-                    let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                    let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-
-                    // Scale from screenshot pixels to display points
-                    let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-                    let displayLocalY = clampedY * (displayHeight / screenshotHeight)
-
-                    // Convert from top-left origin (screenshot) to bottom-left origin (AppKit)
-                    let appKitY = displayHeight - displayLocalY
-
-                    // Convert display-local coords to global screen coords
-                    let globalLocation = CGPoint(
-                        x: displayLocalX + displayFrame.origin.x,
-                        y: appKitY + displayFrame.origin.y
+                    let globalLocation = Self.convertScreenshotPointToGlobalAppKit(
+                        pointCoordinate,
+                        screenCapture: targetScreenCapture
                     )
 
                     detectedElementScreenLocation = globalLocation
-                    detectedElementDisplayFrame = displayFrame
-                } else {
+                    detectedElementDisplayFrame = targetScreenCapture.displayFrame
                 }
 
                 // Save this exchange to conversation history (with the point tag
@@ -711,6 +714,92 @@ final class CompanionManager: ObservableObject {
             systemTTSClient.speakText(displayedResponseText)
             voiceState = .responding
         }
+    }
+
+    func clearScreenAnnotations() {
+        annotationClearTask?.cancel()
+        annotationClearTask = nil
+        screenAnnotations = []
+    }
+
+    private func scheduleAnnotationClearIfNeeded() {
+        annotationClearTask?.cancel()
+        guard !screenAnnotations.isEmpty else { return }
+        annotationClearTask = Task {
+            try? await Task.sleep(for: .seconds(20))
+            guard !Task.isCancelled else { return }
+            screenAnnotations = []
+        }
+    }
+
+    static func makeScreenAnnotation(
+        from parsedAnnotation: ParsedScreenAnnotation,
+        screenCapture: CompanionScreenCapture
+    ) -> ScreenAnnotation? {
+        let coordinates = parsedAnnotation.coordinates
+        guard coordinates.count == (parsedAnnotation.kind == .pointer ? 2 : 4) else { return nil }
+
+        let startPixelLocation = CGPoint(x: coordinates[0], y: coordinates[1])
+        let endPixelLocation: CGPoint
+        switch parsedAnnotation.kind {
+        case .arrow:
+            endPixelLocation = CGPoint(x: coordinates[2], y: coordinates[3])
+        case .box, .highlight:
+            endPixelLocation = CGPoint(
+                x: coordinates[0] + max(coordinates[2], 1),
+                y: coordinates[1] + max(coordinates[3], 1)
+            )
+        case .pointer:
+            endPixelLocation = startPixelLocation
+        }
+
+        return ScreenAnnotation(
+            kind: parsedAnnotation.kind,
+            startLocation: convertScreenshotPointToGlobalAppKit(
+                startPixelLocation,
+                screenCapture: screenCapture
+            ),
+            endLocation: convertScreenshotPointToGlobalAppKit(
+                endPixelLocation,
+                screenCapture: screenCapture
+            ),
+            label: parsedAnnotation.label,
+            displayFrame: screenCapture.displayFrame
+        )
+    }
+
+    private static func makePointerAnnotation(
+        pointCoordinate: CGPoint,
+        label: String?,
+        screenCapture: CompanionScreenCapture
+    ) -> ScreenAnnotation {
+        let globalLocation = convertScreenshotPointToGlobalAppKit(
+            pointCoordinate,
+            screenCapture: screenCapture
+        )
+        return ScreenAnnotation(
+            kind: .pointer,
+            startLocation: globalLocation,
+            endLocation: globalLocation,
+            label: label == "none" ? nil : label,
+            displayFrame: screenCapture.displayFrame
+        )
+    }
+
+    static func convertScreenshotPointToGlobalAppKit(
+        _ screenshotPoint: CGPoint,
+        screenCapture: CompanionScreenCapture
+    ) -> CGPoint {
+        let screenshotWidth = max(CGFloat(screenCapture.screenshotWidthInPixels), 1)
+        let screenshotHeight = max(CGFloat(screenCapture.screenshotHeightInPixels), 1)
+        let clampedX = max(0, min(screenshotPoint.x, screenshotWidth))
+        let clampedY = max(0, min(screenshotPoint.y, screenshotHeight))
+        let localX = clampedX * (CGFloat(screenCapture.displayWidthInPoints) / screenshotWidth)
+        let localYFromTop = clampedY * (CGFloat(screenCapture.displayHeightInPoints) / screenshotHeight)
+        return CGPoint(
+            x: screenCapture.displayFrame.minX + localX,
+            y: screenCapture.displayFrame.minY + CGFloat(screenCapture.displayHeightInPoints) - localYFromTop
+        )
     }
 
     // MARK: - Point Tag Parsing

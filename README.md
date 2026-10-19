@@ -2,6 +2,8 @@
 
 OpenClicky is a privacy-first, open-source macOS AI companion. It lives in the menu bar, accepts voice or annotated screenshot prompts, can see only the content you invoke it on, and can point to relevant interface elements in its response.
 
+Model responses can draw temporary click-through teaching overlays directly on the desktop: animated arrows, boxes, highlights, pulsing pointers, and short labels. The drawings never modify the underlying app and disappear automatically.
+
 OpenClicky is based on the original [Clicky](https://github.com/farzaa/clicky) project and remains available under its MIT license.
 
 ## Principles

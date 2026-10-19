@@ -7,6 +7,7 @@
 
 import Testing
 import CoreGraphics
+import Foundation
 @testable import OpenClicky
 
 @MainActor
@@ -77,6 +78,48 @@ struct leanring_buddyTests {
         #expect(result.coordinate == nil)
         #expect(result.elementLabel == "none")
         #expect(result.screenNumber == nil)
+    }
+
+    @Test func parsesMultipleTeachingAnnotationsAndRemovesTags() {
+        let result = ScreenAnnotationParser.parse(
+            from: "Open the inspector, then check this section. [POINT:none]\n[DRAW:arrow:100,120,460,260:open inspector]\n[DRAW:box:500,200,220,140:settings area]"
+        )
+
+        #expect(result.responseText == "Open the inspector, then check this section. [POINT:none]")
+        #expect(result.annotations.count == 2)
+        #expect(result.annotations[0].kind == .arrow)
+        #expect(result.annotations[0].coordinates == [100, 120, 460, 260])
+        #expect(result.annotations[0].label == "open inspector")
+        #expect(result.annotations[1].kind == .box)
+    }
+
+    @Test func ignoresMalformedTeachingAnnotations() {
+        let result = ScreenAnnotationParser.parse(
+            from: "Use this control. [DRAW:arrow:10,20:missing coordinates]"
+        )
+
+        #expect(result.responseText == "Use this control.")
+        #expect(result.annotations.isEmpty)
+    }
+
+    @Test func convertsScreenshotPixelsIntoGlobalWindowCoordinates() {
+        let screenCapture = CompanionScreenCapture(
+            imageData: Data(),
+            label: "test window",
+            isCursorScreen: true,
+            displayWidthInPoints: 800,
+            displayHeightInPoints: 600,
+            displayFrame: CGRect(x: 200, y: 100, width: 800, height: 600),
+            screenshotWidthInPixels: 1600,
+            screenshotHeightInPixels: 1200
+        )
+
+        let globalLocation = CompanionManager.convertScreenshotPointToGlobalAppKit(
+            CGPoint(x: 800, y: 300),
+            screenCapture: screenCapture
+        )
+
+        #expect(globalLocation == CGPoint(x: 600, y: 550))
     }
 
 }
