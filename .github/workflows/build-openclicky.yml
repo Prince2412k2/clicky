@@ -36,6 +36,16 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             test
 
+      - name: Build clean distributable app
+        run: |
+          xcodebuild \
+            -project leanring-buddy.xcodeproj \
+            -scheme leanring-buddy \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/OpenClickyPackageData" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
       - name: Ad-hoc sign application
         run: |
           codesign \
@@ -43,7 +53,16 @@ jobs:
             --deep \
             --sign - \
             --entitlements leanring-buddy/leanring-buddy.entitlements \
-            "$RUNNER_TEMP/OpenClickyDerivedData/Build/Products/Debug/OpenClicky.app"
+            "$RUNNER_TEMP/OpenClickyPackageData/Build/Products/Release/OpenClicky.app"
+
+      - name: Verify application bundle
+        run: |
+          APP_PATH="$RUNNER_TEMP/OpenClickyPackageData/Build/Products/Release/OpenClicky.app"
+          codesign --verify --deep --strict "$APP_PATH"
+          if find "$APP_PATH" -iname '*XCTest*' -o -iname '*PostHog*' -o -iname '*Sparkle*' | grep -q .; then
+            echo "Unexpected test or removed third-party framework found in app bundle"
+            exit 1
+          fi
 
       - name: Package application
         run: |
@@ -52,7 +71,7 @@ jobs:
             -k \
             --sequesterRsrc \
             --keepParent \
-            "$RUNNER_TEMP/OpenClickyDerivedData/Build/Products/Debug/OpenClicky.app" \
+            "$RUNNER_TEMP/OpenClickyPackageData/Build/Products/Release/OpenClicky.app" \
             "$RUNNER_TEMP/OpenClicky-Test-Build.zip"
 
       - name: Upload application
