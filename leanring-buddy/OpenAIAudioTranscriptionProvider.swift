@@ -17,7 +17,10 @@ struct OpenAIAudioTranscriptionProviderError: LocalizedError {
 }
 
 final class OpenAIAudioTranscriptionProvider: BuddyTranscriptionProvider {
-    private let apiKey = AppBundleConfiguration.stringValue(forKey: "OpenAIAPIKey")
+    private var apiKey: String? {
+        OpenClickyCredentialStore.apiKey(for: .openAI)
+            ?? AppBundleConfiguration.stringValue(forKey: "OpenAIAPIKey")
+    }
     private let modelName = AppBundleConfiguration.stringValue(forKey: "OpenAITranscriptionModel")
         ?? "gpt-4o-transcribe"
 
@@ -30,7 +33,7 @@ final class OpenAIAudioTranscriptionProvider: BuddyTranscriptionProvider {
 
     var unavailableExplanation: String? {
         guard !isConfigured else { return nil }
-        return "OpenAI transcription is not configured. Add OpenAIAPIKey to Info.plist."
+        return "Add an OpenAI API key in the OpenClicky provider settings first."
     }
 
     func startStreamingSession(

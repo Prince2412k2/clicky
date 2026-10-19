@@ -24,6 +24,75 @@ struct CompanionScreenCapture {
 @MainActor
 enum CompanionScreenCaptureUtility {
 
+    static func captureFrontmostWindowAsJPEG() async throws -> CompanionScreenCapture {
+        guard let frontmostApplication = NSWorkspace.shared.frontmostApplication else {
+            throw NSError(
+                domain: "CompanionScreenCapture",
+                code: -3,
+                userInfo: [NSLocalizedDescriptionKey: "No frontmost application is available"]
+            )
+        }
+
+        let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+        let candidateWindows = content.windows.filter { window in
+            window.owningApplication?.processID == frontmostApplication.processIdentifier
+                && window.isOnScreen
+                && window.frame.width >= 160
+                && window.frame.height >= 120
+        }
+
+        guard let frontmostWindow = candidateWindows.max(by: {
+            $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height
+        }) else {
+            throw NSError(
+                domain: "CompanionScreenCapture",
+                code: -4,
+                userInfo: [NSLocalizedDescriptionKey: "The frontmost app has no capturable window"]
+            )
+        }
+
+        let configuration = SCStreamConfiguration()
+        let maximumDimension = 1440
+        let aspectRatio = frontmostWindow.frame.width / frontmostWindow.frame.height
+        if frontmostWindow.frame.width >= frontmostWindow.frame.height {
+            configuration.width = maximumDimension
+            configuration.height = max(1, Int(CGFloat(maximumDimension) / aspectRatio))
+        } else {
+            configuration.height = maximumDimension
+            configuration.width = max(1, Int(CGFloat(maximumDimension) * aspectRatio))
+        }
+        configuration.showsCursor = false
+
+        let capturedImage = try await SCScreenshotManager.captureImage(
+            contentFilter: SCContentFilter(desktopIndependentWindow: frontmostWindow),
+            configuration: configuration
+        )
+        guard let jpegData = NSBitmapImageRep(cgImage: capturedImage)
+            .representation(using: .jpeg, properties: [.compressionFactor: 0.88]) else {
+            throw NSError(
+                domain: "CompanionScreenCapture",
+                code: -5,
+                userInfo: [NSLocalizedDescriptionKey: "The captured window could not be encoded"]
+            )
+        }
+
+        let windowFrame = frontmostWindow.frame
+        let screenFrame = NSScreen.screens.first(where: { screen in
+            screen.frame.intersects(windowFrame)
+        })?.frame ?? NSScreen.main?.frame ?? windowFrame
+
+        return CompanionScreenCapture(
+            imageData: jpegData,
+            label: "frontmost window in \(frontmostApplication.localizedName ?? "the active app")",
+            isCursorScreen: true,
+            displayWidthInPoints: Int(windowFrame.width),
+            displayHeightInPoints: Int(windowFrame.height),
+            displayFrame: screenFrame,
+            screenshotWidthInPixels: capturedImage.width,
+            screenshotHeightInPixels: capturedImage.height
+        )
+    }
+
     /// Captures all connected displays as JPEG data, labeling each with
     /// whether the user's cursor is on that screen. This gives the AI
     /// full context across multiple monitors.

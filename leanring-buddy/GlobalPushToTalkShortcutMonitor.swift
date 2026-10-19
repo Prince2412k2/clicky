@@ -2,7 +2,7 @@
 //  GlobalPushToTalkShortcutMonitor.swift
 //  leanring-buddy
 //
-//  Captures push-to-talk keyboard shortcuts while makesomething is running in the
+//  Captures OpenClicky's global voice and screenshot shortcuts while the app is
 //  background. Uses a listen-only CGEvent tap so modifier-only shortcuts like
 //  ctrl + option behave more like a real system-wide voice tool.
 //
@@ -14,6 +14,7 @@ import Foundation
 
 final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     let shortcutTransitionPublisher = PassthroughSubject<BuddyPushToTalkShortcut.ShortcutTransition, Never>()
+    let screenshotShortcutPublisher = PassthroughSubject<Void, Never>()
 
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
@@ -22,6 +23,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// Published so the overlay can hide immediately on key release without
     /// waiting for the async dictation state pipeline to catch up.
     @Published private(set) var isShortcutCurrentlyPressed = false
+    private var isScreenshotShortcutCurrentlyPressed = false
 
     deinit {
         stop()
@@ -85,6 +87,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
     func stop() {
         isShortcutCurrentlyPressed = false
+        isScreenshotShortcutCurrentlyPressed = false
 
         if let globalEventTapRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), globalEventTapRunLoopSource, .commonModes)
@@ -109,6 +112,20 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         }
 
         let eventKeyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+        let modifierFlags = NSEvent.ModifierFlags(rawValue: UInt(event.flags.rawValue))
+            .intersection(.deviceIndependentFlagsMask)
+        let screenshotShortcutFlags: NSEvent.ModifierFlags = [.control, .command]
+        let isScreenshotShortcutPressed = modifierFlags == screenshotShortcutFlags
+
+        if eventType == .flagsChanged {
+            if isScreenshotShortcutPressed && !isScreenshotShortcutCurrentlyPressed {
+                isScreenshotShortcutCurrentlyPressed = true
+                screenshotShortcutPublisher.send()
+            } else if !isScreenshotShortcutPressed {
+                isScreenshotShortcutCurrentlyPressed = false
+            }
+        }
+
         let shortcutTransition = BuddyPushToTalkShortcut.shortcutTransition(
             for: eventType,
             keyCode: eventKeyCode,
