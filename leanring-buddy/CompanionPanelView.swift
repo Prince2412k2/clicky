@@ -770,52 +770,64 @@ struct CompanionPanelView: View {
     }
 
     private var chatGPTAccountRow: some View {
-        HStack {
-            Text("ChatGPT")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
+        VStack(alignment: .trailing, spacing: 4) {
+            HStack {
+                Text("ChatGPT")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
 
-            Spacer()
+                Spacer()
 
-            if companionManager.chatGPTAuthenticationManager.isSignedIn {
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(companionManager.chatGPTAuthenticationManager.accountEmail ?? "Connected")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(DS.Colors.success)
-                        .lineLimit(1)
+                if companionManager.chatGPTAuthenticationManager.isSignedIn {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(companionManager.chatGPTAuthenticationManager.accountEmail ?? "Connected")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(DS.Colors.success)
+                            .lineLimit(1)
 
-                    Button("Manage usage") {
-                        if let usageURL = URL(string: "https://chatgpt.com/settings/usage") {
-                            NSWorkspace.shared.open(usageURL)
+                        Button("Manage usage") {
+                            if let usageURL = URL(string: "https://chatgpt.com/settings/usage") {
+                                NSWorkspace.shared.open(usageURL)
+                            }
                         }
+                        .font(.system(size: 9, weight: .medium))
+                        .buttonStyle(.plain)
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .pointerCursor()
                     }
-                    .font(.system(size: 9, weight: .medium))
+
+                    Button("Disconnect") {
+                        companionManager.chatGPTAuthenticationManager.signOut()
+                    }
+                        .font(.system(size: 10, weight: .medium))
                     .buttonStyle(.plain)
                     .foregroundColor(DS.Colors.textTertiary)
                     .pointerCursor()
+                } else {
+                    Button {
+                        companionManager.chatGPTAuthenticationManager.signIn()
+                    } label: {
+                        Text(companionManager.chatGPTAuthenticationManager.isSigningIn ? "Connecting…" : "Continue with ChatGPT")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(DS.Colors.textOnAccent)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(Capsule().fill(DS.Colors.accent))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                    .disabled(companionManager.chatGPTAuthenticationManager.isSigningIn)
                 }
+            }
 
-                Button("Disconnect") {
-                    companionManager.chatGPTAuthenticationManager.signOut()
+            if companionManager.chatGPTAuthenticationManager.authenticationErrorMessage != nil {
+                Button("Try another account or workspace") {
+                    companionManager.chatGPTAuthenticationManager.signInWithAnotherAccountOrWorkspace()
                 }
-                .font(.system(size: 10, weight: .medium))
                 .buttonStyle(.plain)
+                .font(.system(size: 9, weight: .medium))
                 .foregroundColor(DS.Colors.textTertiary)
                 .pointerCursor()
-            } else {
-                Button {
-                    companionManager.chatGPTAuthenticationManager.signIn()
-                } label: {
-                    Text(companionManager.chatGPTAuthenticationManager.isSigningIn ? "Connecting…" : "Continue with ChatGPT")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(DS.Colors.textOnAccent)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(Capsule().fill(DS.Colors.accent))
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-                .disabled(companionManager.chatGPTAuthenticationManager.isSigningIn)
             }
         }
         .padding(.vertical, 4)

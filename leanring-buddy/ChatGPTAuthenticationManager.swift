@@ -91,6 +91,20 @@ final class ChatGPTAuthenticationManager: ObservableObject {
         }
     }
 
+    /// Starts a separate dynamic registration instead of reusing an issued
+    /// client that is bound to a previously selected account and workspace.
+    func signInWithAnotherAccountOrWorkspace() {
+        guard !isSigningIn else { return }
+        credentials = nil
+        isSignedIn = false
+        accountEmail = nil
+        authenticationErrorMessage = nil
+        try? Self.deleteCredentialsFromKeychain()
+        UserDefaults.standard.removeObject(forKey: Self.registeredClientIDKey)
+        UserDefaults.standard.removeObject(forKey: Self.registeredSubjectKey)
+        signIn()
+    }
+
     func acknowledgePlanUsage() {
         shouldShowPlanUsageConfirmation = false
         UserDefaults.standard.set(true, forKey: Self.acknowledgedPlanUsageKey)
@@ -198,7 +212,10 @@ final class ChatGPTAuthenticationManager: ObservableObject {
         }
         if let oauthError = returnedValues["error"] {
             throw ChatGPTAuthenticationError(
-                message: returnedValues["error_description"] ?? "ChatGPT sign-in failed: \(oauthError)"
+                message: Self.authorizationErrorMessage(
+                    code: oauthError,
+                    description: returnedValues["error_description"]
+                )
             )
         }
         guard let authorizationCode = returnedValues["code"] else {
@@ -329,6 +346,14 @@ final class ChatGPTAuthenticationManager: ObservableObject {
             throw ChatGPTOAuthTokenError(code: oauthErrorCode, details: responseText)
         }
         return try JSONDecoder().decode(TokenResponse.self, from: data)
+    }
+
+    private static func authorizationErrorMessage(code: String, description: String?) -> String {
+        if code == "access_denied" || code == "3p_login_workspace_scope_denied" {
+            return description
+                ?? "ChatGPT plan access is unavailable for the selected workspace. Try the eligible Personal workspace for your Plus or Pro account, or use an API key."
+        }
+        return description ?? "ChatGPT sign-in failed: \(code)"
     }
 
     private static func stableHostID() -> String {
