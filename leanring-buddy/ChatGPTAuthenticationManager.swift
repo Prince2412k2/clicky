@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import Combine
 import CryptoKit
 import Foundation
 import Network
