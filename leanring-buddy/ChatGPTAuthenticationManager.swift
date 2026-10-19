@@ -349,9 +349,9 @@ final class ChatGPTAuthenticationManager: ObservableObject {
     }
 
     private static func authorizationErrorMessage(code: String, description: String?) -> String {
-        if code == "access_denied" {
+        if code == "access_denied" || code == "3p_login_workspace_scope_denied" {
             return description
-                ?? "ChatGPT plan access was not approved or is unavailable for the selected account and workspace. Try another eligible Plus or Pro workspace, or use an API key."
+                ?? "ChatGPT plan access is unavailable for the selected workspace. Try the eligible Personal workspace for your Plus or Pro account, or use an API key."
         }
         return description ?? "ChatGPT sign-in failed: \(code)"
     }
