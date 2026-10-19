@@ -25,6 +25,7 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
     @Published private(set) var displayedResponseText = ""
+    @Published private(set) var interactionErrorMessage: String?
     @Published private(set) var hasAccessibilityPermission = false
     @Published private(set) var hasScreenRecordingPermission = false
     @Published private(set) var hasMicrophonePermission = false
@@ -412,16 +413,25 @@ final class CompanionManager: ObservableObject {
 
     private func presentScreenshotPrompt() {
         guard hasScreenRecordingPermission && hasScreenContentPermission else {
-            NotificationCenter.default.post(name: .openClickyDismissPanel, object: nil)
+            interactionErrorMessage = "Grant Screen Recording and Screen Content access to use screenshot prompts."
+            NotificationCenter.default.post(name: .openClickyShowPanel, object: nil)
             return
         }
 
+        interactionErrorMessage = nil
         NotificationCenter.default.post(name: .openClickyDismissPanel, object: nil)
         Task {
             do {
                 let screenCapture = try await CompanionScreenCaptureUtility.captureFrontmostWindowAsJPEG()
-                screenshotPromptWindowManager.show(screenCapture: screenCapture)
+                screenshotPromptWindowManager.show(
+                    screenCapture: screenCapture,
+                    providerName: selectedAIProvider.displayName,
+                    modelName: selectedModel
+                )
             } catch {
+                let message = "Could not capture the frontmost window: \(error.localizedDescription)"
+                interactionErrorMessage = message
+                displayedResponseText = message
             }
         }
     }

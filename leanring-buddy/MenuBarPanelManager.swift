@@ -16,6 +16,7 @@ import SwiftUI
 
 extension Notification.Name {
     static let openClickyDismissPanel = Notification.Name("openClickyDismissPanel")
+    static let openClickyShowPanel = Notification.Name("openClickyShowPanel")
 }
 
 /// Custom NSPanel subclass that can become the key window even with
@@ -30,6 +31,7 @@ final class MenuBarPanelManager: NSObject {
     private var panel: NSPanel?
     private var clickOutsideMonitor: Any?
     private var dismissPanelObserver: NSObjectProtocol?
+    private var showPanelObserver: NSObjectProtocol?
 
     private let companionManager: CompanionManager
     private let panelWidth: CGFloat = 296
@@ -47,6 +49,15 @@ final class MenuBarPanelManager: NSObject {
         ) { [weak self] _ in
             self?.hidePanel()
         }
+        showPanelObserver = NotificationCenter.default.addObserver(
+            forName: .openClickyShowPanel,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.showPanel()
+            }
+        }
     }
 
     deinit {
@@ -54,6 +65,9 @@ final class MenuBarPanelManager: NSObject {
             NSEvent.removeMonitor(monitor)
         }
         if let observer = dismissPanelObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = showPanelObserver {
             NotificationCenter.default.removeObserver(observer)
         }
     }

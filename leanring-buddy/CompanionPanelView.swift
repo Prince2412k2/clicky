@@ -136,6 +136,16 @@ struct CompanionPanelView: View {
             }
 
             accountSection
+
+            if let errorMessage = companionManager.interactionErrorMessage
+                ?? companionManager.buddyDictationManager.lastErrorMessage {
+                Text(errorMessage)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 5)
+            }
         }
         .padding(8)
     }

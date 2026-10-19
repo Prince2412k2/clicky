@@ -19,13 +19,19 @@ final class ScreenshotPromptWindowManager {
         self.onSubmit = onSubmit
     }
 
-    func show(screenCapture: CompanionScreenCapture) {
+    func show(
+        screenCapture: CompanionScreenCapture,
+        providerName: String,
+        modelName: String
+    ) {
         close()
 
         guard let screenshotImage = NSImage(data: screenCapture.imageData) else { return }
 
         let promptView = ScreenshotPromptView(
             screenshotImage: screenshotImage,
+            providerName: providerName,
+            modelName: modelName,
             onCancel: { [weak self] in self?.close() },
             onSubmit: { [weak self] prompt, annotationStrokes in
                 guard let self else { return }
@@ -126,6 +132,8 @@ final class ScreenshotPromptWindowManager {
 
 private struct ScreenshotPromptView: View {
     let screenshotImage: NSImage
+    let providerName: String
+    let modelName: String
     let onCancel: () -> Void
     let onSubmit: (String, [ScreenshotAnnotationStroke]) -> Void
 
@@ -165,6 +173,16 @@ private struct ScreenshotPromptView: View {
 
                 Image(systemName: "sparkles")
                     .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(providerName)
+                        .font(.system(size: 10, weight: .semibold))
+                    Text(modelName)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: 120, alignment: .leading)
 
                 TextField("Ask anything about this window…", text: $prompt)
                     .textFieldStyle(.plain)
