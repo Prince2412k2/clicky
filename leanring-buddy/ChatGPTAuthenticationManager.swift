@@ -29,6 +29,15 @@ struct ChatGPTAuthenticationError: LocalizedError {
     var errorDescription: String? { message }
 }
 
+private struct ChatGPTOAuthTokenError: LocalizedError {
+    let code: String
+    let details: String
+
+    var errorDescription: String? {
+        "ChatGPT authentication failed: \(details)"
+    }
+}
+
 @MainActor
 final class ChatGPTAuthenticationManager: ObservableObject {
     private static let authorizationURL = URL(string: "https://auth.openai.com/api/accounts/authorize")!
@@ -137,7 +146,7 @@ final class ChatGPTAuthenticationManager: ObservableObject {
         }
     }
 
-    private func performSignIn() async throws -> ChatGPTCredentials {
+    private func performSignIn(allowInvalidGrantRetry: Bool = true) async throws -> ChatGPTCredentials {
         let loopbackServer = ChatGPTOAuthLoopbackServer()
         let callbackURL = try await loopbackServer.start()
         let state = Self.randomURLSafeString(byteCount: 32)
@@ -213,7 +222,20 @@ final class ChatGPTAuthenticationManager: ObservableObject {
             "resource": Self.resource
         ])
 
-        let tokenResponse = try await Self.requestTokens(tokenRequest)
+        let tokenResponse: TokenResponse
+        do {
+            tokenResponse = try await Self.requestTokens(tokenRequest)
+        } catch let tokenError as ChatGPTOAuthTokenError
+            where tokenError.code == "invalid_grant"
+                && allowInvalidGrantRetry
+                && authorizationClientID == "dynamic_agent_client" {
+            // Dynamic registration can issue the client successfully while the first
+            // authorization code is no longer exchangeable. OpenAI requires starting
+            // a fresh authorization with that issued client ID rather than registering
+            // another client or attempting to reuse the rejected code.
+            UserDefaults.standard.set(issuedClientID, forKey: Self.registeredClientIDKey)
+            return try await performSignIn(allowInvalidGrantRetry: false)
+        }
         let identity = try await ChatGPTIDTokenValidator.validate(
             idToken: tokenResponse.idToken,
             expectedClientID: issuedClientID,
@@ -302,7 +324,9 @@ final class ChatGPTAuthenticationManager: ObservableObject {
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let responseText = String(data: data, encoding: .utf8) ?? "Unknown error"
-            throw ChatGPTAuthenticationError(message: "ChatGPT authentication failed: \(responseText)")
+            let oauthErrorCode = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
+                ?? "token_exchange_failed"
+            throw ChatGPTOAuthTokenError(code: oauthErrorCode, details: responseText)
         }
         return try JSONDecoder().decode(TokenResponse.self, from: data)
     }
