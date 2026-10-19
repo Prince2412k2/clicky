@@ -56,6 +56,7 @@ final class CompanionManager: ObservableObject {
             )
         }
     )
+    private let computerActionApprovalWindowManager = ComputerActionApprovalWindowManager()
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
@@ -85,6 +86,7 @@ final class CompanionManager: ObservableObject {
     private var guidedAdvanceTask: Task<Void, Never>?
     private var guidedSessionGoal = ""
     private var guidedStepCount = 0
+    private var allowsClicksForGuidedSession = false
 
     /// True when all three required permissions (accessibility, screen recording,
     /// microphone) are granted. Used by the panel to show a single "all good" state.
@@ -564,6 +566,9 @@ final class CompanionManager: ObservableObject {
     guided walkthroughs:
     when the user asks how to complete a task in the visible app, act as a live guide. give exactly one actionable step at a time, draw the target, and append [GUIDE:continue]. after the user acts, you will receive a new screenshot and must inspect what actually changed before giving the next step. never repeat a completed step. when the goal is visibly complete, append [GUIDE:done]. for ordinary questions that do not need a walkthrough, do not add a GUIDE tag.
 
+    approved computer actions:
+    only when the user explicitly asks you to click, act, perform the steps, or do the task for them, you may request one click with [ACTION:click:x,y:short description]. the user must approve it in OpenClicky before anything happens. request only one click per response and combine it with [GUIDE:continue] when more steps remain. never request a click for purchases, account deletion, permission dialogs, passwords, authentication, financial actions, sending messages, or any other consequential action. for those, guide the user and let them click.
+
     examples:
     - user asks how to color grade in final cut: "you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector]"
     - user asks what html is: "html stands for hypertext markup language, it's basically the skeleton of every web page. curious how it connects to the css you're looking at? [POINT:none]"
@@ -646,7 +651,8 @@ final class CompanionManager: ObservableObject {
                 guard !Task.isCancelled else { return }
 
                 // Parse the provider-independent [POINT:...] tag.
-                let guidedParseResult = GuidedSessionParser.parse(from: fullResponseText)
+                let computerActionParseResult = ComputerActionParser.parse(from: fullResponseText)
+                let guidedParseResult = GuidedSessionParser.parse(from: computerActionParseResult.responseText)
                 let annotationParseResult = ScreenAnnotationParser.parse(from: guidedParseResult.responseText)
                 let parseResult = Self.parsePointingCoordinates(from: annotationParseResult.responseText)
                 let spokenText = parseResult.spokenText
@@ -694,6 +700,13 @@ final class CompanionManager: ObservableObject {
                     originalPrompt: transcript,
                     isGuidedFollowUp: isGuidedFollowUp
                 )
+                if let clickAction = computerActionParseResult.clickAction,
+                   let targetScreenCapture {
+                    requestComputerClickApproval(
+                        clickAction,
+                        screenCapture: targetScreenCapture
+                    )
+                }
 
                 if let pointCoordinate = parseResult.coordinate,
                    let targetScreenCapture {
@@ -759,8 +772,64 @@ final class CompanionManager: ObservableObject {
         isWaitingForGuidedAction = false
         guidedSessionGoal = ""
         guidedStepCount = 0
+        allowsClicksForGuidedSession = false
+        computerActionApprovalWindowManager.close()
         if clearAnnotations {
             clearScreenAnnotations()
+        }
+    }
+
+    private func requestComputerClickApproval(
+        _ clickAction: ParsedComputerClickAction,
+        screenCapture: CompanionScreenCapture
+    ) {
+        guard hasAccessibilityPermission else {
+            interactionErrorMessage = "Accessibility permission is required before OpenClicky can perform an approved click."
+            NotificationCenter.default.post(name: .openClickyShowPanel, object: nil)
+            return
+        }
+        let pendingAction = PendingComputerClickAction(
+            appKitLocation: Self.convertScreenshotPointToGlobalAppKit(
+                clickAction.screenshotLocation,
+                screenCapture: screenCapture
+            ),
+            label: clickAction.label,
+            targetApplication: NSWorkspace.shared.frontmostApplication
+        )
+
+        if isGuidedSessionActive && allowsClicksForGuidedSession {
+            performApprovedComputerClick(pendingAction)
+            return
+        }
+
+        computerActionApprovalWindowManager.show(
+            action: pendingAction,
+            allowsWalkthroughApproval: isGuidedSessionActive,
+            onAllowOnce: { [weak self] in
+                self?.computerActionApprovalWindowManager.close()
+                self?.performApprovedComputerClick(pendingAction)
+            },
+            onAllowWalkthrough: { [weak self] in
+                guard let self else { return }
+                self.computerActionApprovalWindowManager.close()
+                self.allowsClicksForGuidedSession = true
+                self.performApprovedComputerClick(pendingAction)
+            },
+            onCancel: { [weak self] in
+                self?.computerActionApprovalWindowManager.close()
+                self?.stopGuidedSession()
+            }
+        )
+    }
+
+    private func performApprovedComputerClick(_ pendingAction: PendingComputerClickAction) {
+        Task {
+            do {
+                try await ComputerClickExecutor.perform(pendingAction)
+            } catch {
+                interactionErrorMessage = "Could not perform the approved click: \(error.localizedDescription)"
+                stopGuidedSession()
+            }
         }
     }
 

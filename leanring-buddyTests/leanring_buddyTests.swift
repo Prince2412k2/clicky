@@ -119,4 +119,16 @@ struct leanring_buddyTests {
         #expect(result.responseText == "Your texture is connected.")
     }
 
+    @Test func parsesApprovedClickRequestAndRemovesActionTag() {
+        let result = ComputerActionParser.parse(
+            from: "I can open that panel for you. [ACTION:click:420,180:open shader panel] [GUIDE:continue]"
+        )
+
+        #expect(result.clickAction?.screenshotLocation == CGPoint(x: 420, y: 180))
+        #expect(result.clickAction?.label == "open shader panel")
+        #expect(result.responseText.contains("I can open that panel for you."))
+        #expect(result.responseText.contains("[GUIDE:continue]"))
+        #expect(!result.responseText.contains("[ACTION:"))
+    }
+
 }
