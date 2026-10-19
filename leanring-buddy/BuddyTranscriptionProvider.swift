@@ -54,7 +54,6 @@ enum BuddyTranscriptionProviderFactory {
             ?? .appleSpeech
         let resolvedProvider = resolveProvider(requestedProvider)
         let provider = makeProvider(resolvedProvider)
-        print("🎙️ Transcription: using \(provider.displayName)")
         return (resolvedProvider, provider)
     }
 
@@ -82,8 +81,6 @@ enum BuddyTranscriptionProviderFactory {
             if openAIProvider.isConfigured {
                 return .openAI
             }
-            print("⚠️ Transcription: OpenAI preferred but not configured, falling back")
-            print("⚠️ Transcription: using Apple Speech as fallback")
             return .appleSpeech
         }
     }

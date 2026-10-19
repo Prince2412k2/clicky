@@ -23,7 +23,6 @@ enum CompanionVoiceState {
 @MainActor
 final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle
-    @Published private(set) var lastTranscript: String?
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
     @Published private(set) var displayedResponseText = ""
     @Published private(set) var hasAccessibilityPermission = false
@@ -32,7 +31,7 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var hasScreenContentPermission = false
 
     /// Screen location (global AppKit coords) of a detected UI element the
-    /// buddy should fly to and point at. Parsed from Claude's response;
+    /// buddy should fly to and point at. Parsed from the selected model's response;
     /// observed by BlueCursorView to trigger the flight animation.
     @Published var detectedElementScreenLocation: CGPoint?
     /// The display frame (global AppKit coords) of the screen the detected
@@ -47,7 +46,7 @@ final class CompanionManager: ObservableObject {
     let overlayWindowManager = OverlayWindowManager()
     private lazy var screenshotPromptWindowManager = ScreenshotPromptWindowManager(
         onSubmit: { [weak self] prompt, screenCapture in
-            self?.sendTranscriptToClaudeWithScreenshot(
+            self?.sendPromptWithScreenshot(
                 transcript: prompt,
                 suppliedScreenCaptures: [screenCapture]
             )
@@ -63,8 +62,7 @@ final class CompanionManager: ObservableObject {
     private let directAIClient = OpenClickyDirectAIClient()
     private let systemTTSClient = SystemTTSClient()
 
-    /// Conversation history so Claude remembers prior exchanges within a session.
-    /// Each entry is the user's transcript and Claude's response.
+    /// Conversation history so the selected model remembers prior exchanges within a session.
     private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
 
     /// The currently running AI response task, if any. Cancelled when the user
@@ -85,6 +83,10 @@ final class CompanionManager: ObservableObject {
     /// microphone) are granted. Used by the panel to show a single "all good" state.
     var allPermissionsGranted: Bool {
         hasAccessibilityPermission && hasScreenRecordingPermission && hasMicrophonePermission && hasScreenContentPermission
+    }
+
+    var visualPromptPermissionsGranted: Bool {
+        hasAccessibilityPermission && hasScreenRecordingPermission && hasScreenContentPermission
     }
 
     /// Whether the blue cursor overlay is currently visible on screen.
@@ -154,6 +156,12 @@ final class CompanionManager: ObservableObject {
         OpenClickyCredentialStore.deleteAPIKey(for: provider)
     }
 
+    func clearConversation() {
+        conversationHistory.removeAll()
+        displayedResponseText = ""
+        clearDetectedElementLocation()
+    }
+
     func refreshAvailableModels() {
         let provider = selectedAIProvider
         Task {
@@ -180,16 +188,16 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// User preference for whether the Clicky cursor should be shown.
+    /// User preference for whether the OpenClicky cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
-    @Published var isClickyCursorEnabled: Bool = UserDefaults.standard.object(forKey: "isClickyCursorEnabled") == nil
+    @Published var isOpenClickyCursorEnabled: Bool = UserDefaults.standard.object(forKey: "isOpenClickyCursorEnabled") == nil
         ? true
-        : UserDefaults.standard.bool(forKey: "isClickyCursorEnabled")
+        : UserDefaults.standard.bool(forKey: "isOpenClickyCursorEnabled")
 
-    func setClickyCursorEnabled(_ enabled: Bool) {
-        isClickyCursorEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "isClickyCursorEnabled")
+    func setOpenClickyCursorEnabled(_ enabled: Bool) {
+        isOpenClickyCursorEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isOpenClickyCursorEnabled")
         transientHideTask?.cancel()
         transientHideTask = nil
 
@@ -216,7 +224,7 @@ final class CompanionManager: ObservableObject {
             refreshAvailableModels()
         }
 
-        if allPermissionsGranted && isClickyCursorEnabled {
+        if visualPromptPermissionsGranted && isOpenClickyCursorEnabled {
             overlayWindowManager.hasShownOverlayBefore = true
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
@@ -268,7 +276,6 @@ final class CompanionManager: ObservableObject {
         if previouslyHadAccessibility != hasAccessibilityPermission
             || previouslyHadScreenRecording != hasScreenRecordingPermission
             || previouslyHadMicrophone != hasMicrophonePermission {
-            print("🔑 Permissions — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
         }
 
         // Screen content permission is persisted — once the user has approved the
@@ -281,7 +288,7 @@ final class CompanionManager: ObservableObject {
 
     /// Triggers the macOS screen content picker by performing a dummy
     /// screenshot capture. Once the user approves, we persist the grant
-    /// so they're never asked again during onboarding.
+    /// so they're never asked again during setup.
     @Published private(set) var isRequestingScreenContent = false
 
     func requestScreenContentPermission() {
@@ -302,20 +309,18 @@ final class CompanionManager: ObservableObject {
                 // Verify the capture actually returned real content — a 0x0 or
                 // fully-empty image means the user denied the prompt.
                 let didCapture = image.width > 0 && image.height > 0
-                print("🔑 Screen content capture result — width: \(image.width), height: \(image.height), didCapture: \(didCapture)")
                 await MainActor.run {
                     isRequestingScreenContent = false
                     guard didCapture else { return }
                     hasScreenContentPermission = true
                     UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
-                    if allPermissionsGranted && !isOverlayVisible && isClickyCursorEnabled {
+                    if visualPromptPermissionsGranted && !isOverlayVisible && isOpenClickyCursorEnabled {
                         overlayWindowManager.hasShownOverlayBefore = true
                         overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                         isOverlayVisible = true
                     }
                 }
             } catch {
-                print("⚠️ Screen content permission request failed: \(error)")
                 await MainActor.run { isRequestingScreenContent = false }
             }
         }
@@ -407,17 +412,16 @@ final class CompanionManager: ObservableObject {
 
     private func presentScreenshotPrompt() {
         guard hasScreenRecordingPermission && hasScreenContentPermission else {
-            NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+            NotificationCenter.default.post(name: .openClickyDismissPanel, object: nil)
             return
         }
 
-        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+        NotificationCenter.default.post(name: .openClickyDismissPanel, object: nil)
         Task {
             do {
                 let screenCapture = try await CompanionScreenCaptureUtility.captureFrontmostWindowAsJPEG()
                 screenshotPromptWindowManager.show(screenCapture: screenCapture)
             } catch {
-                print("⚠️ Screenshot prompt capture failed: \(error.localizedDescription)")
             }
         }
     }
@@ -432,14 +436,14 @@ final class CompanionManager: ObservableObject {
             transientHideTask = nil
 
             // If the cursor is hidden, bring it back transiently for this interaction
-            if !isClickyCursorEnabled && !isOverlayVisible {
+            if !isOpenClickyCursorEnabled && !isOverlayVisible {
                 overlayWindowManager.hasShownOverlayBefore = true
                 overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                 isOverlayVisible = true
             }
 
             // Dismiss the menu bar panel so it doesn't cover the screen
-            NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+            NotificationCenter.default.post(name: .openClickyDismissPanel, object: nil)
 
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
@@ -454,9 +458,7 @@ final class CompanionManager: ObservableObject {
                         // Partial transcripts are hidden (waveform-only UI)
                     },
                     submitDraftText: { [weak self] finalTranscript in
-                        self?.lastTranscript = finalTranscript
-                        print("🗣️ Companion received transcript: \(finalTranscript)")
-                        self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                        self?.sendPromptWithScreenshot(transcript: finalTranscript)
                     }
                 )
             }
@@ -475,21 +477,15 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Companion Prompt
 
-    private static let companionVoiceResponseSystemPrompt = """
-    you're clicky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
+    private static let companionResponseSystemPrompt = """
+    You are OpenClicky, a privacy-first companion that lives in the user's macOS menu bar. The user asked for help and explicitly shared one or more screenshots with this request. This is an ongoing conversation, so use the supplied conversation history when relevant.
 
     rules:
-    - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
-    - all lowercase, casual, warm. no emojis.
-    - write for the ear, not the eye. short sentences. no lists, bullet points, markdown, or formatting — just natural speech.
-    - don't use abbreviations or symbols that sound weird read aloud. write "for example" not "e.g.", spell out small numbers.
+    - Default to a concise, direct answer. Expand when the user asks for depth.
+    - Be warm and precise. Do not add filler or unnecessary follow-up questions.
     - if the user's question relates to what's on their screen, reference specific things you see.
     - if the screenshot doesn't seem relevant to their question, just answer the question directly.
     - you can help with anything — coding, writing, general knowledge, brainstorming.
-    - never say "simply" or "just".
-    - don't read out code verbatim. describe what the code does or what needs to change conversationally.
-    - focus on giving a thorough, useful explanation. don't end with simple yes/no questions like "want me to explain more?" or "should i show you?" — those are dead ends that force the user to just say yes.
-    - instead, when it fits naturally, end by planting a seed — mention something bigger or more ambitious they could try, a related concept that goes deeper, or a next-level technique that builds on what you just explained. make it something worth coming back for, not a question they'd just nod to. it's okay to not end with anything extra if the answer is complete on its own.
     - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
 
     element pointing:
@@ -512,12 +508,10 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - AI Response Pipeline
 
-    /// Captures a screenshot, sends it along with the transcript to Claude,
-    /// and plays the response aloud via ElevenLabs TTS. The cursor stays in
-    /// the spinner/processing state until TTS audio begins playing.
-    /// Claude's response may include a [POINT:x,y:label] tag which triggers
-    /// the buddy to fly to that element on screen.
-    private func sendTranscriptToClaudeWithScreenshot(
+    /// Captures a screenshot, sends it to the selected provider, and optionally
+    /// speaks the response through macOS. A [POINT:x,y:label] tag makes the
+    /// buddy fly to the referenced element.
+    private func sendPromptWithScreenshot(
         transcript: String,
         suppliedScreenCaptures: [CompanionScreenCapture]? = nil
     ) {
@@ -534,7 +528,7 @@ final class CompanionManager: ObservableObject {
                 if let suppliedScreenCaptures {
                     screenCaptures = suppliedScreenCaptures
                 } else {
-                    screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                    screenCaptures = [try await CompanionScreenCaptureUtility.captureScreenContainingPointerAsJPEG()]
                 }
 
                 guard !Task.isCancelled else { return }
@@ -553,11 +547,15 @@ final class CompanionManager: ObservableObject {
                 }
 
                 let fullResponseText: String
+                let outputGuidance = speechOutput == .macVoice
+                    ? "The response will be spoken aloud. Use short, natural sentences and avoid markdown or code dumps."
+                    : "The response will be read on screen. Use clear formatting when it improves readability."
+                let systemPrompt = Self.companionResponseSystemPrompt + "\n\n" + outputGuidance
                 if selectedAIProvider == .chatGPT {
                     let response = try await openAIResponsesAPI.analyzeImageStreaming(
                         images: labeledImages,
                         model: selectedModel,
-                        systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                        systemPrompt: systemPrompt,
                         conversationHistory: historyForAPI,
                         userPrompt: transcript,
                         onTextChunk: { _ in }
@@ -569,7 +567,7 @@ final class CompanionManager: ObservableObject {
                         model: selectedModel,
                         apiKey: OpenClickyCredentialStore.apiKey(for: selectedAIProvider),
                         images: labeledImages,
-                        systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                        systemPrompt: systemPrompt,
                         conversationHistory: historyForAPI,
                         userPrompt: transcript
                     )
@@ -577,7 +575,7 @@ final class CompanionManager: ObservableObject {
 
                 guard !Task.isCancelled else { return }
 
-                // Parse the [POINT:...] tag from Claude's response
+                // Parse the provider-independent [POINT:...] tag.
                 let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
                 let spokenText = parseResult.spokenText
                 displayedResponseText = spokenText
@@ -603,7 +601,7 @@ final class CompanionManager: ObservableObject {
 
                 if let pointCoordinate = parseResult.coordinate,
                    let targetScreenCapture {
-                    // Claude's coordinates are in the screenshot's pixel space
+                    // Model coordinates are in the screenshot's pixel space
                     // (top-left origin, e.g. 1280x831). Scale to the display's
                     // point space (e.g. 1512x982), then convert to AppKit global coords.
                     let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
@@ -631,9 +629,7 @@ final class CompanionManager: ObservableObject {
 
                     detectedElementScreenLocation = globalLocation
                     detectedElementDisplayFrame = displayFrame
-                    print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
                 } else {
-                    print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
                 }
 
                 // Save this exchange to conversation history (with the point tag
@@ -648,7 +644,6 @@ final class CompanionManager: ObservableObject {
                     conversationHistory.removeFirst(conversationHistory.count - 10)
                 }
 
-                print("🧠 Conversation history: \(conversationHistory.count) exchanges")
 
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     if speechOutput == .macVoice {
@@ -659,7 +654,6 @@ final class CompanionManager: ObservableObject {
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
-                print("⚠️ Companion response error: \(error)")
                 showResponseError(error.localizedDescription)
             }
 
@@ -675,7 +669,7 @@ final class CompanionManager: ObservableObject {
     /// fades out the overlay after a 1-second pause. Cancelled automatically
     /// if the user starts another push-to-talk interaction.
     private func scheduleTransientHideIfNeeded() {
-        guard !isClickyCursorEnabled && isOverlayVisible else { return }
+        guard !isOpenClickyCursorEnabled && isOverlayVisible else { return }
 
         transientHideTask?.cancel()
         transientHideTask = Task {
@@ -711,11 +705,11 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Point Tag Parsing
 
-    /// Result of parsing a [POINT:...] tag from Claude's response.
+    /// Result of parsing a [POINT:...] tag from a model response.
     struct PointingParseResult {
         /// The response text with the [POINT:...] tag removed — this is what gets spoken.
         let spokenText: String
-        /// The parsed pixel coordinate, or nil if Claude said "none" or no tag was found.
+        /// The parsed pixel coordinate, or nil if the model said "none" or no tag was found.
         let coordinate: CGPoint?
         /// Short label describing the element (e.g. "run button"), or "none".
         let elementLabel: String?
@@ -723,7 +717,7 @@ final class CompanionManager: ObservableObject {
         let screenNumber: Int?
     }
 
-    /// Parses a [POINT:x,y:label:screenN] or [POINT:none] tag from the end of Claude's response.
+    /// Parses a [POINT:x,y:label:screenN] or [POINT:none] tag from a response.
     /// Returns the spoken text (tag removed) and the optional coordinate + label + screen number.
     static func parsePointingCoordinates(from responseText: String) -> PointingParseResult {
         // Match [POINT:none] or [POINT:123,456:label] or [POINT:123,456:label:screen2]

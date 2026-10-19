@@ -10,7 +10,7 @@ OpenClicky is based on the original [Clicky](https://github.com/farzaa/clicky) p
 - No automatic launch-at-login registration
 - Provider credentials are stored in macOS Keychain
 - ChatGPT OAuth tokens go directly between the app, OpenAI authentication, and the public OpenAI API
-- Screenshots are captured only when a prompt shortcut is invoked
+- Screenshots are captured only when a prompt shortcut is invoked: voice captures the pointer's display, while screenshot prompts capture only the frontmost window
 - Local-first defaults: Apple Speech, macOS voice, and optional Ollama
 
 ## Shortcuts

@@ -146,8 +146,9 @@ final class OpenClickyDirectAIClient {
             request = anthropicRequest
         case .gemini:
             guard let apiKey else { throw missingAPIKeyError(provider) }
-            let encodedAPIKey = apiKey.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? apiKey
-            request = URLRequest(url: URL(string: "https://generativelanguage.googleapis.com/v1beta/models?key=\(encodedAPIKey)")!)
+            var geminiRequest = URLRequest(url: URL(string: "https://generativelanguage.googleapis.com/v1beta/models")!)
+            geminiRequest.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+            request = geminiRequest
         case .ollama:
             request = URLRequest(url: URL(string: "http://127.0.0.1:11434/api/tags")!)
         }
@@ -342,8 +343,7 @@ final class OpenClickyDirectAIClient {
         userPrompt: String
     ) async throws -> String {
         let encodedModel = model.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? model
-        let encodedAPIKey = apiKey.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? apiKey
-        let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(encodedModel):generateContent?key=\(encodedAPIKey)")!
+        let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(encodedModel):generateContent")!
 
         var contents: [[String: Any]] = conversationHistory.flatMap { entry in
             [
@@ -366,6 +366,7 @@ final class OpenClickyDirectAIClient {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "systemInstruction": ["parts": [["text": systemPrompt]]],

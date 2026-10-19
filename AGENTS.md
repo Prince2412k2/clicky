@@ -15,7 +15,7 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 - **AI Chat**: ChatGPT Plan, OpenAI API, Anthropic API, Gemini API, or local Ollama
 - **Speech-to-Text**: Apple Speech by default; OpenAI API transcription is optional
 - **Text-to-Speech**: macOS voice or text only
-- **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor and frontmost-window capture
+- **Screen Capture**: ScreenCaptureKit (macOS 14.2+); voice captures the pointer's display and screenshot prompts capture the frontmost window
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: The selected model embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
@@ -44,8 +44,7 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
 | `CompanionPanelView.swift` | ~350 | Compact native provider, model, voice, transcription, account, permission, and quit controls. |
 | `OverlayWindow.swift` | ~700 | Full-screen transparent cursor, response, waveform, spinner, and pointing overlay. |
-| `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
-| `CompanionScreenCaptureUtility.swift` | ~200 | Multi-monitor and frontmost-window capture using ScreenCaptureKit. |
+| `CompanionScreenCaptureUtility.swift` | ~220 | Pointer-display and frontmost-window capture using ScreenCaptureKit. |
 | `ScreenshotPromptWindow.swift` | ~280 | Annotatable frontmost-window preview and Spotlight-style prompt composer. |
 | `ChatGPTAuthenticationManager.swift` | ~650 | ChatGPT OAuth registration, PKCE, ID-token verification, Keychain storage, refresh, recovery, and revocation. |
 | `OpenAIResponsesAPI.swift` | ~180 | ChatGPT-plan model discovery and streaming public Responses API client. |
@@ -57,7 +56,6 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 | `AppleSpeechTranscriptionProvider.swift` | ~147 | Local fallback transcription provider backed by Apple's Speech framework. |
 | `BuddyAudioConversionSupport.swift` | ~108 | Audio conversion helpers. Converts live mic buffers to PCM16 mono audio and builds WAV payloads for upload-based providers. |
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
-| `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |

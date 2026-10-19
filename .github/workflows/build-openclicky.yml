@@ -25,6 +25,17 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
+      - name: Run unit tests
+        run: |
+          xcodebuild \
+            -project leanring-buddy.xcodeproj \
+            -scheme leanring-buddy \
+            -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/OpenClickyDerivedData" \
+            -only-testing:leanring-buddyTests \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+
       - name: Ad-hoc sign application
         run: |
           codesign \

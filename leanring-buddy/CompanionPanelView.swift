@@ -18,9 +18,10 @@ struct CompanionPanelView: View {
 
             Divider()
 
-            if companionManager.allPermissionsGranted {
-                configurationSection
-            } else {
+            configurationSection
+
+            if !companionManager.allPermissionsGranted {
+                Divider()
                 permissionsSection
             }
 
@@ -206,6 +207,20 @@ struct CompanionPanelView: View {
                 .controlSize(.small)
                 .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .pointerCursor()
+
+                if companionManager.hasAPIKey(for: companionManager.selectedAIProvider) {
+                    Button {
+                        companionManager.removeAPIKey(for: companionManager.selectedAIProvider)
+                        apiKeyInput = ""
+                        apiKeySaveMessage = "Removed from Keychain"
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Remove API key")
+                    .pointerCursor()
+                }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
@@ -356,6 +371,15 @@ struct CompanionPanelView: View {
 
             Spacer()
 
+            Button("Clear") {
+                companionManager.clearConversation()
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(.secondary)
+            .help("Clear conversation from memory")
+            .pointerCursor()
+
             Button("Quit") {
                 NSApp.terminate(nil)
             }
@@ -368,7 +392,8 @@ struct CompanionPanelView: View {
     }
 
     private var statusText: String {
-        guard companionManager.allPermissionsGranted else { return "Setup required" }
+        guard companionManager.visualPromptPermissionsGranted else { return "Setup required" }
+        guard companionManager.hasMicrophonePermission else { return "Screenshot ready" }
         switch companionManager.voiceState {
         case .idle: return "Ready"
         case .listening: return "Listening"
@@ -378,7 +403,8 @@ struct CompanionPanelView: View {
     }
 
     private var statusColor: Color {
-        guard companionManager.allPermissionsGranted else { return .orange }
+        guard companionManager.visualPromptPermissionsGranted else { return .orange }
+        guard companionManager.hasMicrophonePermission else { return .yellow }
         switch companionManager.voiceState {
         case .idle: return .green
         case .listening, .processing, .responding: return .accentColor

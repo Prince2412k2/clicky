@@ -161,12 +161,12 @@ final class ChatGPTAuthenticationManager: ObservableObject {
     }
 
     private func performSignIn(allowInvalidGrantRetry: Bool = true) async throws -> ChatGPTCredentials {
-        let loopbackServer = ChatGPTOAuthLoopbackServer()
-        let callbackURL = try await loopbackServer.start()
         let state = Self.randomURLSafeString(byteCount: 32)
         let nonce = Self.randomURLSafeString(byteCount: 32)
         let codeVerifier = Self.randomURLSafeString(byteCount: 64)
         let codeChallenge = Self.base64URLEncoded(Data(SHA256.hash(data: Data(codeVerifier.utf8))))
+        let loopbackServer = ChatGPTOAuthLoopbackServer(expectedState: state)
+        let callbackURL = try await loopbackServer.start()
         let savedClientID = credentials?.clientID
             ?? UserDefaults.standard.string(forKey: Self.registeredClientIDKey)
         let authorizationClientID = savedClientID ?? "dynamic_agent_client"
@@ -439,14 +439,21 @@ final class ChatGPTAuthenticationManager: ObservableObject {
     }
 }
 
-private final class ChatGPTOAuthLoopbackServer {
+private final class ChatGPTOAuthLoopbackServer: @unchecked Sendable {
+    private let expectedState: String
     private var listener: NWListener?
     private var callbackContinuation: CheckedContinuation<URL, Error>?
     private var pendingCallbackURL: URL?
     private var hasCompletedStart = false
 
+    init(expectedState: String) {
+        self.expectedState = expectedState
+    }
+
     func start() async throws -> URL {
-        let listener = try NWListener(using: .tcp, on: .any)
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+        let listener = try NWListener(using: parameters)
         self.listener = listener
         listener.newConnectionHandler = { [weak self] connection in
             connection.start(queue: .main)
@@ -487,6 +494,16 @@ private final class ChatGPTOAuthLoopbackServer {
         }
         return try await withCheckedThrowingContinuation { continuation in
             callbackContinuation = continuation
+            DispatchQueue.main.asyncAfter(deadline: .now() + 300) { [weak self] in
+                guard let self, let callbackContinuation = self.callbackContinuation else { return }
+                self.callbackContinuation = nil
+                self.listener?.cancel()
+                callbackContinuation.resume(
+                    throwing: ChatGPTAuthenticationError(
+                        message: "ChatGPT sign-in timed out. Try again when you are ready."
+                    )
+                )
+            }
         }
     }
 
@@ -513,9 +530,15 @@ private final class ChatGPTOAuthLoopbackServer {
                 return
             }
             let requestParts = requestLine.split(separator: " ")
-            guard requestParts.count >= 2,
+            let requestHeaders = requestText.components(separatedBy: "\r\n")
+            let hostHeader = requestHeaders.first { $0.lowercased().hasPrefix("host:") }
+            guard requestParts.count >= 3,
+                  requestParts[0] == "GET",
+                  hostHeader?.lowercased().hasPrefix("host: 127.0.0.1:") == true,
                   let callbackURL = URL(string: "http://127.0.0.1\(requestParts[1])"),
-                  callbackURL.path == "/auth/callback" else {
+                  callbackURL.path == "/auth/callback",
+                  URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?
+                    .queryItems?.first(where: { $0.name == "state" })?.value == expectedState else {
                 connection.cancel()
                 return
             }
