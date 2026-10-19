@@ -5,7 +5,7 @@
 
 ## Overview
 
-Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk with screen context. Control+Command captures the frontmost window and opens an annotation plus prompt composer. Provider keys and OAuth credentials stay in macOS Keychain; there is no telemetry or mandatory proxy.
+Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk with screen context. Control+Command freezes the pointer's display and opens a focused launcher with drawing tools. Provider keys and OAuth credentials stay in macOS Keychain; there is no telemetry or mandatory proxy.
 
 ## Architecture
 
@@ -15,7 +15,7 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 - **AI Chat**: ChatGPT Plan, OpenAI API, Anthropic API, Gemini API, or local Ollama
 - **Speech-to-Text**: Apple Speech by default; OpenAI API transcription is optional
 - **Text-to-Speech**: macOS voice or text only
-- **Screen Capture**: ScreenCaptureKit (macOS 14.2+); voice captures the pointer's display and screenshot prompts capture the frontmost window
+- **Screen Capture**: ScreenCaptureKit (macOS 14.2+); prompts capture only the display containing the pointer
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: The selected model embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Teaching Annotations**: Provider-independent `[DRAW:...]` tags render temporary click-through arrows, boxes, highlights, pointers, and labels over the relevant screen or window.
@@ -30,11 +30,9 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 
 **Global Push-To-Talk Shortcut**: Background push-to-talk uses a listen-only `CGEvent` tap instead of an AppKit global monitor so modifier-based shortcuts like `ctrl + option` are detected more reliably while the app is running in the background.
 
-**Transient Cursor Mode**: When "Show Clicky" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
-
 **Provider credentials**: API keys and ChatGPT OAuth credentials are stored in Keychain. ChatGPT uses OpenAI's official dynamic-registration flow and public Responses API. Other providers use documented API-key endpoints; Ollama stays on loopback.
 
-**Screenshot composer**: Control+Command captures the frontmost window before activating OpenClicky. A keyable floating panel supports red freehand annotations and a Spotlight-style prompt field.
+**Visual prompt launcher**: Control+Command freezes the current display under a borderless full-screen layer. A Spotlight-style field receives focus immediately; pen, arrow, rectangle, ellipse, eraser, and undo controls annotate the capture without showing a conventional screenshot window.
 
 ## Key Files
 
@@ -45,8 +43,8 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
 | `CompanionPanelView.swift` | ~350 | Compact native provider, model, voice, transcription, account, permission, and quit controls. |
 | `OverlayWindow.swift` | ~700 | Full-screen transparent cursor, response, waveform, spinner, and pointing overlay. |
-| `CompanionScreenCaptureUtility.swift` | ~220 | Pointer-display and frontmost-window capture using ScreenCaptureKit. |
-| `ScreenshotPromptWindow.swift` | ~280 | Annotatable frontmost-window preview and Spotlight-style prompt composer. |
+| `CompanionScreenCaptureUtility.swift` | ~120 | Pointer-display capture using ScreenCaptureKit. |
+| `ScreenshotPromptWindow.swift` | ~500 | Full-display visual prompt launcher with focused input and Excalidraw-style annotation tools. |
 | `ScreenAnnotation.swift` | ~230 | Drawing-tag parser and click-through teaching overlay for arrows, boxes, highlights, pointers, and labels. |
 | `ChatGPTAuthenticationManager.swift` | ~650 | ChatGPT OAuth registration, PKCE, ID-token verification, Keychain storage, refresh, recovery, and revocation. |
 | `OpenAIResponsesAPI.swift` | ~180 | ChatGPT-plan model discovery and streaming public Responses API client. |

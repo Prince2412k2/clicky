@@ -15,10 +15,8 @@ struct CompanionPanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-
             Divider()
-
-            configurationSection
+            settingsSection
 
             if !companionManager.allPermissionsGranted {
                 Divider()
@@ -26,16 +24,11 @@ struct CompanionPanelView: View {
             }
 
             Divider()
-
-            shortcutsSection
-
-            Divider()
-
-            footer
+            actionsSection
         }
-        .frame(width: 296)
+        .frame(width: 310)
         .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         .onChange(of: authenticationManager.isSignedIn) { _, isSignedIn in
             if isSignedIn {
                 companionManager.refreshAvailableModels()
@@ -49,26 +42,24 @@ struct CompanionPanelView: View {
                 authenticationManager.acknowledgePlanUsage()
             }
         } message: {
-            Text("OpenClicky will send your prompts and invoked screenshots directly to OpenAI using your eligible ChatGPT plan. Requests are not stored by OpenClicky.")
+            Text("Prompts and invoked screenshots go directly to OpenAI using your eligible ChatGPT plan.")
         }
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 11) {
             ZStack {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(Color.accentColor.gradient)
-                    .frame(width: 30, height: 30)
-
+                    .frame(width: 34, height: 34)
                 Image(systemName: "cursorarrow.rays")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.white)
             }
 
             VStack(alignment: .leading, spacing: 1) {
                 Text("OpenClicky")
-                    .font(.system(size: 13, weight: .semibold))
-
+                    .font(.system(size: 14, weight: .semibold))
                 Text(statusText)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
@@ -76,25 +67,41 @@ struct CompanionPanelView: View {
 
             Spacer()
 
-            Circle()
-                .fill(statusColor)
-                .frame(width: 7, height: 7)
+            Toggle(
+                "OpenClicky",
+                isOn: Binding(
+                    get: { companionManager.isOpenClickyEnabled },
+                    set: { companionManager.setOpenClickyEnabled($0) }
+                )
+            )
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .tint(.accentColor)
+            .help(companionManager.isOpenClickyEnabled ? "Stop OpenClicky" : "Start OpenClicky")
+            .pointerCursor()
         }
-        .padding(12)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
     }
 
-    private var configurationSection: some View {
-        VStack(spacing: 4) {
+    private var settingsSection: some View {
+        VStack(spacing: 0) {
             menuRow(
                 title: "Provider",
                 iconName: "network",
                 selection: companionManager.selectedAIProvider.displayName
             ) {
                 ForEach(OpenClickyAIProvider.allCases) { provider in
-                    Button(provider.displayName) {
+                    Button {
                         apiKeyInput = ""
                         apiKeySaveMessage = nil
                         companionManager.setSelectedAIProvider(provider)
+                    } label: {
+                        menuSelectionLabel(
+                            provider.displayName,
+                            isSelected: companionManager.selectedAIProvider == provider
+                        )
                     }
                 }
             }
@@ -105,8 +112,13 @@ struct CompanionPanelView: View {
                 selection: companionManager.selectedModel
             ) {
                 ForEach(companionManager.availableModelNames, id: \.self) { modelName in
-                    Button(modelName) {
+                    Button {
                         companionManager.setSelectedModel(modelName)
+                    } label: {
+                        menuSelectionLabel(
+                            modelName,
+                            isSelected: companionManager.selectedModel == modelName
+                        )
                     }
                 }
             }
@@ -117,104 +129,139 @@ struct CompanionPanelView: View {
                 selection: companionManager.speechOutput.displayName
             ) {
                 ForEach(OpenClickySpeechOutput.allCases) { output in
-                    Button(output.displayName) {
+                    Button {
                         companionManager.setSpeechOutput(output)
+                    } label: {
+                        menuSelectionLabel(
+                            output.displayName,
+                            isSelected: companionManager.speechOutput == output
+                        )
                     }
                 }
             }
+
             menuRow(
                 title: "Transcription",
                 iconName: "mic",
                 selection: companionManager.buddyDictationManager.transcriptionProviderDisplayName
             ) {
-                Button("Apple Speech") {
+                Button {
                     companionManager.buddyDictationManager.setTranscriptionProvider(.appleSpeech)
+                } label: {
+                    menuSelectionLabel(
+                        "Apple Speech",
+                        isSelected: companionManager.buddyDictationManager.selectedTranscriptionProvider == .appleSpeech
+                    )
                 }
-                Button("OpenAI API") {
+                Button {
                     companionManager.buddyDictationManager.setTranscriptionProvider(.openAI)
+                } label: {
+                    menuSelectionLabel(
+                        "OpenAI API",
+                        isSelected: companionManager.buddyDictationManager.selectedTranscriptionProvider == .openAI
+                    )
                 }
             }
 
             accountSection
 
-            if let errorMessage = companionManager.interactionErrorMessage
-                ?? companionManager.buddyDictationManager.lastErrorMessage {
-                Text(errorMessage)
+            if let errorMessage = visibleErrorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                     .font(.system(size: 10))
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 5)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
             }
         }
-        .padding(8)
+        .padding(.vertical, 6)
     }
 
     @ViewBuilder
     private var accountSection: some View {
         if companionManager.selectedAIProvider == .chatGPT {
-            HStack(spacing: 9) {
-                Image(systemName: "person.crop.circle")
-                    .foregroundStyle(.secondary)
-                    .frame(width: 17)
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(authenticationManager.isSignedIn ? "Connected" : "Account")
-                        .font(.system(size: 12, weight: .medium))
-                    if let accountEmail = authenticationManager.accountEmail {
-                        Text(accountEmail)
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+            if authenticationManager.isSignedIn {
+                Menu {
+                    Button("Manage Usage") {
+                        if let usageURL = URL(string: "https://chatgpt.com/settings/usage") {
+                            NSWorkspace.shared.open(usageURL)
+                        }
                     }
-                }
-
-                Spacer()
-
-                Button(authenticationManager.isSignedIn ? "Disconnect" : "Connect") {
-                    if authenticationManager.isSignedIn {
+                    Button("Use Another Account or Workspace") {
+                        authenticationManager.signInWithAnotherAccountOrWorkspace()
+                    }
+                    Divider()
+                    Button("Disconnect", role: .destructive) {
                         authenticationManager.signOut()
-                    } else {
-                        authenticationManager.signIn()
                     }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "person.crop.circle.fill")
+                            .font(.system(size: 19))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 22)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(authenticationManager.accountEmail ?? "ChatGPT")
+                                .font(.system(size: 12, weight: .medium))
+                                .lineLimit(1)
+                            Text("Connected")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                    .padding(.horizontal, 12)
+                    .frame(height: 42)
                 }
-                .controlSize(.small)
-                .disabled(authenticationManager.isSigningIn)
+                .menuStyle(.borderlessButton)
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity)
                 .pointerCursor()
-            }
-            .padding(.horizontal, 8)
-            .frame(minHeight: 38)
-
-            if let authenticationErrorMessage = authenticationManager.authenticationErrorMessage {
-                Text(authenticationErrorMessage)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 8)
-
-                Button("Try another account or workspace") {
-                    authenticationManager.signInWithAnotherAccountOrWorkspace()
+            } else {
+                Button {
+                    authenticationManager.signIn()
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "person.crop.circle.badge.plus")
+                            .font(.system(size: 16))
+                            .frame(width: 22)
+                        Text(authenticationManager.isSigningIn ? "Connecting…" : "Connect ChatGPT")
+                            .font(.system(size: 12, weight: .medium))
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                    .padding(.horizontal, 12)
+                    .frame(height: 38)
                 }
-                .buttonStyle(.link)
-                .font(.system(size: 10, weight: .medium))
-                .padding(.horizontal, 8)
+                .buttonStyle(.plain)
+                .disabled(authenticationManager.isSigningIn)
                 .pointerCursor()
             }
         } else if companionManager.selectedAIProvider.requiresAPIKey {
             HStack(spacing: 8) {
+                Image(systemName: "key.fill")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22)
                 SecureField(
                     companionManager.hasAPIKey(for: companionManager.selectedAIProvider)
-                        ? "Key saved — enter to replace"
-                        : "Paste API key",
+                        ? "Key stored in Keychain"
+                        : "API key",
                     text: $apiKeyInput
                 )
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
                 .font(.system(size: 11))
 
-                Button("Save") {
+                Button {
                     saveAPIKey()
+                } label: {
+                    Image(systemName: "checkmark.circle.fill")
                 }
-                .controlSize(.small)
+                .buttonStyle(.plain)
+                .foregroundStyle(.tint)
                 .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .pointerCursor()
 
@@ -232,25 +279,22 @@ struct CompanionPanelView: View {
                     .pointerCursor()
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 12)
+            .frame(height: 38)
 
             if let apiKeySaveMessage {
                 Text(apiKeySaveMessage)
-                    .font(.system(size: 10))
+                    .font(.system(size: 9))
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, 44)
+                    .padding(.bottom, 4)
             }
         } else {
-            staticRow(title: "Connection", iconName: "desktopcomputer", value: "localhost:11434")
-        }
-
-        if let providerErrorMessage = companionManager.providerErrorMessage {
-            Text(providerErrorMessage)
-                .font(.system(size: 10))
-                .foregroundStyle(.red)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 8)
+            valueRow(
+                title: "Ollama",
+                iconName: "desktopcomputer",
+                value: "localhost:11434"
+            )
         }
     }
 
@@ -265,159 +309,157 @@ struct CompanionPanelView: View {
         }
         .menuStyle(.borderlessButton)
         .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
         .pointerCursor()
     }
 
-    private func staticRow(title: String, iconName: String, value: String) -> some View {
+    private func valueRow(title: String, iconName: String, value: String) -> some View {
         rowLabel(title: title, iconName: iconName, value: value, showsChevron: false)
     }
 
     private func rowLabel(title: String, iconName: String, value: String, showsChevron: Bool) -> some View {
-        HStack(spacing: 9) {
+        HStack(spacing: 10) {
             Image(systemName: iconName)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.secondary)
-                .frame(width: 17)
-
-            Text(title)
-                .font(.system(size: 12, weight: .medium))
-
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.primary)
+                Text(value)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
             Spacer()
-
-            Text(value)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-
             if showsChevron {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 8, weight: .semibold))
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.tertiary)
             }
         }
         .contentShape(Rectangle())
-        .padding(.horizontal, 8)
-        .frame(height: 34)
+        .padding(.horizontal, 12)
+        .frame(height: 42)
+    }
+
+    private func menuSelectionLabel(_ text: String, isSelected: Bool) -> some View {
+        HStack {
+            Text(text)
+            Spacer()
+            if isSelected {
+                Image(systemName: "checkmark")
+            }
+        }
     }
 
     private var permissionsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Permissions")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-
-            Text("OpenClicky only captures audio and screen content when you use a shortcut.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            permissionButton(
-                title: "Microphone",
-                isGranted: companionManager.hasMicrophonePermission,
-                action: requestMicrophonePermission
-            )
-            permissionButton(
-                title: "Accessibility",
-                isGranted: companionManager.hasAccessibilityPermission,
-                action: { _ = WindowPositionManager.requestAccessibilityPermission() }
-            )
-            permissionButton(
-                title: "Screen Recording",
-                isGranted: companionManager.hasScreenRecordingPermission,
-                action: { _ = WindowPositionManager.requestScreenRecordingPermission() }
-            )
-            permissionButton(
-                title: "Screen Content",
-                isGranted: companionManager.hasScreenContentPermission,
-                action: companionManager.requestScreenContentPermission
-            )
+        VStack(spacing: 0) {
+            if !companionManager.hasAccessibilityPermission {
+                permissionButton(
+                    title: "Accessibility",
+                    iconName: "hand.raised.fill",
+                    action: { _ = WindowPositionManager.requestAccessibilityPermission() }
+                )
+            }
+            if !companionManager.hasScreenRecordingPermission {
+                permissionButton(
+                    title: "Screen Recording",
+                    iconName: "rectangle.dashed.badge.record",
+                    action: { _ = WindowPositionManager.requestScreenRecordingPermission() }
+                )
+            }
+            if !companionManager.hasScreenContentPermission {
+                permissionButton(
+                    title: "Screen Content",
+                    iconName: "eye.fill",
+                    action: companionManager.requestScreenContentPermission
+                )
+            }
+            if !companionManager.hasMicrophonePermission {
+                permissionButton(
+                    title: "Microphone",
+                    iconName: "mic.fill",
+                    action: requestMicrophonePermission
+                )
+            }
         }
-        .padding(12)
+        .padding(.vertical, 6)
     }
 
-    private func permissionButton(title: String, isGranted: Bool, action: @escaping () -> Void) -> some View {
-        HStack {
-            Image(systemName: isGranted ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(isGranted ? Color.green : Color.secondary)
+    private func permissionButton(title: String, iconName: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: iconName)
+                    .foregroundStyle(.orange)
+                    .frame(width: 22)
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                Spacer()
+                Text("Allow")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.tint)
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    private var actionsSection: some View {
+        VStack(spacing: 0) {
+            Button {
+                companionManager.clearConversation()
+            } label: {
+                actionRow(title: "Clear Conversation", iconName: "trash")
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+
+            Button {
+                NSApp.terminate(nil)
+            } label: {
+                actionRow(title: "Quit OpenClicky", iconName: "power")
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+        }
+        .padding(.vertical, 6)
+    }
+
+    private func actionRow(title: String, iconName: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: iconName)
+                .foregroundStyle(.secondary)
+                .frame(width: 22)
             Text(title)
                 .font(.system(size: 12, weight: .medium))
             Spacer()
-            if !isGranted {
-                Button("Grant", action: action)
-                    .controlSize(.small)
-                    .pointerCursor()
-            }
         }
-        .frame(height: 26)
+        .contentShape(Rectangle())
+        .padding(.horizontal, 12)
+        .frame(height: 36)
     }
 
-    private var shortcutsSection: some View {
-        VStack(spacing: 6) {
-            shortcutRow(title: "Voice prompt", keys: "⌃⌥")
-            shortcutRow(title: "Screenshot prompt", keys: "⌃⌘")
-        }
-        .padding(12)
-    }
-
-    private func shortcutRow(title: String, keys: String) -> some View {
-        HStack {
-            Text(title)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(keys)
-                .font(.system(size: 11, weight: .medium, design: .rounded))
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 5))
-        }
-    }
-
-    private var footer: some View {
-        HStack {
-            Text("Private by default · No telemetry")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-
-            Spacer()
-
-            Button("Clear") {
-                companionManager.clearConversation()
-            }
-            .buttonStyle(.plain)
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(.secondary)
-            .help("Clear conversation from memory")
-            .pointerCursor()
-
-            Button("Quit") {
-                NSApp.terminate(nil)
-            }
-            .buttonStyle(.plain)
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(.secondary)
-            .pointerCursor()
-        }
-        .padding(12)
+    private var visibleErrorMessage: String? {
+        authenticationManager.authenticationErrorMessage
+            ?? companionManager.providerErrorMessage
+            ?? companionManager.interactionErrorMessage
+            ?? companionManager.buddyDictationManager.lastErrorMessage
     }
 
     private var statusText: String {
-        guard companionManager.visualPromptPermissionsGranted else { return "Setup required" }
+        guard companionManager.isOpenClickyEnabled else { return "Stopped" }
+        guard companionManager.visualPromptPermissionsGranted else { return "Needs permission" }
         guard companionManager.hasMicrophonePermission else { return "Screenshot ready" }
         switch companionManager.voiceState {
         case .idle: return "Ready"
         case .listening: return "Listening"
         case .processing: return "Thinking"
         case .responding: return "Responding"
-        }
-    }
-
-    private var statusColor: Color {
-        guard companionManager.visualPromptPermissionsGranted else { return .orange }
-        guard companionManager.hasMicrophonePermission else { return .yellow }
-        switch companionManager.voiceState {
-        case .idle: return .green
-        case .listening, .processing, .responding: return .accentColor
         }
     }
 
@@ -439,7 +481,7 @@ struct CompanionPanelView: View {
                 for: companionManager.selectedAIProvider
             )
             apiKeyInput = ""
-            apiKeySaveMessage = "Saved securely in Keychain"
+            apiKeySaveMessage = "Saved in Keychain"
         } catch {
             apiKeySaveMessage = error.localizedDescription
         }

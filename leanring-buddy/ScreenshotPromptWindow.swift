@@ -5,14 +5,40 @@ private final class ScreenshotPromptPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
-private struct ScreenshotAnnotationStroke: Identifiable {
+private enum ScreenshotAnnotationTool: String, CaseIterable, Identifiable {
+    case pen
+    case arrow
+    case rectangle
+    case ellipse
+    case eraser
+
+    var id: String { rawValue }
+
+    var iconName: String {
+        switch self {
+        case .pen: return "pencil.tip"
+        case .arrow: return "arrow.up.right"
+        case .rectangle: return "rectangle"
+        case .ellipse: return "circle"
+        case .eraser: return "eraser"
+        }
+    }
+
+    var accessibilityLabel: String {
+        rawValue.capitalized
+    }
+}
+
+private struct ScreenshotAnnotation: Identifiable {
     let id = UUID()
+    let tool: ScreenshotAnnotationTool
     var normalizedPoints: [CGPoint]
 }
 
 @MainActor
 final class ScreenshotPromptWindowManager {
     private var window: NSPanel?
+    private var previouslyActiveApplication: NSRunningApplication?
     private let onSubmit: (String, CompanionScreenCapture) -> Void
 
     init(onSubmit: @escaping (String, CompanionScreenCapture) -> Void) {
@@ -24,19 +50,24 @@ final class ScreenshotPromptWindowManager {
         providerName: String,
         modelName: String
     ) {
-        close()
+        close(restorePreviousApplication: false)
 
         guard let screenshotImage = NSImage(data: screenCapture.imageData) else { return }
+        previouslyActiveApplication = NSWorkspace.shared.frontmostApplication
+        let targetScreen = NSScreen.screens.first { screen in
+            screen.frame.intersects(screenCapture.displayFrame)
+        } ?? NSScreen.main
+        guard let targetScreen else { return }
 
         let promptView = ScreenshotPromptView(
             screenshotImage: screenshotImage,
             providerName: providerName,
             modelName: modelName,
             onCancel: { [weak self] in self?.close() },
-            onSubmit: { [weak self] prompt, annotationStrokes in
+            onSubmit: { [weak self] prompt, annotations in
                 guard let self else { return }
                 let annotatedCapture = self.captureByApplyingAnnotations(
-                    annotationStrokes,
+                    annotations,
                     to: screenCapture,
                     screenshotImage: screenshotImage
                 )
@@ -46,37 +77,42 @@ final class ScreenshotPromptWindowManager {
         )
 
         let hostingView = NSHostingView(rootView: promptView)
+        hostingView.frame = NSRect(origin: .zero, size: targetScreen.frame.size)
         let panel = ScreenshotPromptPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 940, height: 700),
+            contentRect: targetScreen.frame,
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         panel.contentView = hostingView
         panel.isFloatingPanel = true
-        panel.level = .floating
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.center()
+        panel.level = .screenSaver
+        panel.isOpaque = true
+        panel.backgroundColor = .black
+        panel.hasShadow = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+        panel.setFrame(targetScreen.frame, display: true)
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         window = panel
     }
 
-    func close() {
+    func close(restorePreviousApplication: Bool = true) {
         window?.orderOut(nil)
         window?.contentView = nil
         window = nil
+        if restorePreviousApplication {
+            previouslyActiveApplication?.activate(options: [])
+        }
+        previouslyActiveApplication = nil
     }
 
     private func captureByApplyingAnnotations(
-        _ annotationStrokes: [ScreenshotAnnotationStroke],
+        _ annotations: [ScreenshotAnnotation],
         to screenCapture: CompanionScreenCapture,
         screenshotImage: NSImage
     ) -> CompanionScreenCapture {
-        guard !annotationStrokes.isEmpty else { return screenCapture }
+        guard !annotations.isEmpty else { return screenCapture }
 
         let imageSize = NSSize(
             width: screenCapture.screenshotWidthInPixels,
@@ -87,24 +123,8 @@ final class ScreenshotPromptWindowManager {
         screenshotImage.draw(in: NSRect(origin: .zero, size: imageSize))
 
         NSColor.systemRed.setStroke()
-        for annotationStroke in annotationStrokes where annotationStroke.normalizedPoints.count > 1 {
-            let path = NSBezierPath()
-            path.lineWidth = max(4, imageSize.width / 300)
-            path.lineCapStyle = .round
-            path.lineJoinStyle = .round
-
-            for (pointIndex, normalizedPoint) in annotationStroke.normalizedPoints.enumerated() {
-                let imagePoint = NSPoint(
-                    x: normalizedPoint.x * imageSize.width,
-                    y: (1 - normalizedPoint.y) * imageSize.height
-                )
-                if pointIndex == 0 {
-                    path.move(to: imagePoint)
-                } else {
-                    path.line(to: imagePoint)
-                }
-            }
-            path.stroke()
+        for annotation in annotations {
+            draw(annotation: annotation, imageSize: imageSize)
         }
         annotatedImage.unlockFocus()
 
@@ -128,6 +148,82 @@ final class ScreenshotPromptWindowManager {
             screenshotHeightInPixels: screenCapture.screenshotHeightInPixels
         )
     }
+
+    private func draw(annotation: ScreenshotAnnotation, imageSize: NSSize) {
+        guard let firstPoint = annotation.normalizedPoints.first else { return }
+        let path = NSBezierPath()
+        path.lineWidth = max(4, imageSize.width / 300)
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+
+        switch annotation.tool {
+        case .pen:
+            path.move(to: imagePoint(firstPoint, imageSize: imageSize))
+            for normalizedPoint in annotation.normalizedPoints.dropFirst() {
+                path.line(to: imagePoint(normalizedPoint, imageSize: imageSize))
+            }
+        case .arrow:
+            guard let lastPoint = annotation.normalizedPoints.last else { return }
+            let startPoint = imagePoint(firstPoint, imageSize: imageSize)
+            let endPoint = imagePoint(lastPoint, imageSize: imageSize)
+            path.move(to: startPoint)
+            path.line(to: endPoint)
+            appendArrowhead(to: path, startPoint: startPoint, endPoint: endPoint, imageSize: imageSize)
+        case .rectangle, .ellipse:
+            guard let lastPoint = annotation.normalizedPoints.last else { return }
+            let annotationRect = imageRect(from: firstPoint, to: lastPoint, imageSize: imageSize)
+            if annotation.tool == .rectangle {
+                path.appendRoundedRect(annotationRect, xRadius: 10, yRadius: 10)
+            } else {
+                path.appendOval(in: annotationRect)
+            }
+        case .eraser:
+            return
+        }
+        path.stroke()
+    }
+
+    private func imagePoint(_ normalizedPoint: CGPoint, imageSize: NSSize) -> NSPoint {
+        NSPoint(
+            x: normalizedPoint.x * imageSize.width,
+            y: (1 - normalizedPoint.y) * imageSize.height
+        )
+    }
+
+    private func imageRect(from firstPoint: CGPoint, to lastPoint: CGPoint, imageSize: NSSize) -> NSRect {
+        let minimumX = min(firstPoint.x, lastPoint.x)
+        let maximumX = max(firstPoint.x, lastPoint.x)
+        let minimumY = min(firstPoint.y, lastPoint.y)
+        let maximumY = max(firstPoint.y, lastPoint.y)
+        return NSRect(
+            x: minimumX * imageSize.width,
+            y: (1 - maximumY) * imageSize.height,
+            width: max((maximumX - minimumX) * imageSize.width, 8),
+            height: max((maximumY - minimumY) * imageSize.height, 8)
+        )
+    }
+
+    private func appendArrowhead(
+        to path: NSBezierPath,
+        startPoint: NSPoint,
+        endPoint: NSPoint,
+        imageSize: NSSize
+    ) {
+        let angle = atan2(endPoint.y - startPoint.y, endPoint.x - startPoint.x)
+        let arrowheadLength = max(imageSize.width / 55, 18)
+        let arrowheadAngle = CGFloat.pi / 6
+        let firstArrowheadPoint = NSPoint(
+            x: endPoint.x - arrowheadLength * cos(angle - arrowheadAngle),
+            y: endPoint.y - arrowheadLength * sin(angle - arrowheadAngle)
+        )
+        let secondArrowheadPoint = NSPoint(
+            x: endPoint.x - arrowheadLength * cos(angle + arrowheadAngle),
+            y: endPoint.y - arrowheadLength * sin(angle + arrowheadAngle)
+        )
+        path.move(to: firstArrowheadPoint)
+        path.line(to: endPoint)
+        path.line(to: secondArrowheadPoint)
+    }
 }
 
 private struct ScreenshotPromptView: View {
@@ -135,145 +231,279 @@ private struct ScreenshotPromptView: View {
     let providerName: String
     let modelName: String
     let onCancel: () -> Void
-    let onSubmit: (String, [ScreenshotAnnotationStroke]) -> Void
+    let onSubmit: (String, [ScreenshotAnnotation]) -> Void
 
     @State private var prompt = ""
-    @State private var annotationStrokes: [ScreenshotAnnotationStroke] = []
-    @State private var activeStroke = ScreenshotAnnotationStroke(normalizedPoints: [])
+    @State private var selectedTool: ScreenshotAnnotationTool?
+    @State private var annotations: [ScreenshotAnnotation] = []
+    @State private var activeAnnotation: ScreenshotAnnotation?
     @FocusState private var isPromptFocused: Bool
 
-    private var screenshotAspectRatio: CGFloat {
-        max(screenshotImage.size.width / max(screenshotImage.size.height, 1), 0.1)
-    }
-
-    private var displayedScreenshotSize: CGSize {
-        let maximumWidth: CGFloat = 900
-        let maximumHeight: CGFloat = 560
-        if maximumWidth / screenshotAspectRatio <= maximumHeight {
-            return CGSize(width: maximumWidth, height: maximumWidth / screenshotAspectRatio)
-        }
-        return CGSize(width: maximumHeight * screenshotAspectRatio, height: maximumHeight)
-    }
-
     var body: some View {
-        VStack(spacing: 12) {
-            screenshotCanvas
+        ZStack(alignment: .top) {
+            Image(nsImage: screenshotImage)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFill()
+                .ignoresSafeArea()
 
+            Color.black.opacity(0.08)
+                .ignoresSafeArea()
+
+            annotationCanvas
+
+            launcherControls
+                .padding(.top, 42)
+        }
+        .onAppear { isPromptFocused = true }
+        .onExitCommand(perform: onCancel)
+    }
+
+    private var launcherControls: some View {
+        HStack(spacing: 12) {
             HStack(spacing: 10) {
-                Button {
-                    annotationStrokes.removeAll()
-                } label: {
-                    Image(systemName: "arrow.uturn.backward")
-                        .frame(width: 30, height: 30)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("Clear annotations")
-                .pointerCursor()
-
                 Image(systemName: "sparkles")
+                    .font(.system(size: 17, weight: .medium))
                     .foregroundStyle(.secondary)
 
-                VStack(alignment: .leading, spacing: 1) {
+                TextField("Ask OpenClicky…", text: $prompt)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 18, weight: .medium))
+                    .focused($isPromptFocused)
+                    .onSubmit(submit)
+
+                VStack(alignment: .trailing, spacing: 1) {
                     Text(providerName)
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: 9, weight: .semibold))
                     Text(modelName)
-                        .font(.system(size: 9))
+                        .font(.system(size: 8))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
-                .frame(maxWidth: 120, alignment: .leading)
-
-                TextField("Ask anything about this window…", text: $prompt)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 15))
-                    .focused($isPromptFocused)
-                    .onSubmit(submit)
 
                 Button(action: submit) {
                     Image(systemName: "arrow.up")
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(.white)
-                        .frame(width: 30, height: 30)
-                        .background(
-                            prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                ? Color.secondary.opacity(0.4)
-                                : Color.accentColor,
-                            in: Circle()
-                        )
+                        .frame(width: 32, height: 32)
+                        .background(canSubmit ? Color.accentColor : Color.secondary.opacity(0.35), in: Circle())
                 }
                 .buttonStyle(.plain)
-                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(!canSubmit)
                 .pointerCursor()
             }
-            .padding(.horizontal, 12)
-            .frame(height: 52)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Color.primary.opacity(0.12), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.2), radius: 18, y: 8)
+            .padding(.leading, 18)
+            .padding(.trailing, 10)
+            .frame(width: 700, height: 62)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().stroke(Color.white.opacity(0.16), lineWidth: 1))
+            .shadow(color: .black.opacity(0.35), radius: 20, y: 8)
+
+            ForEach(ScreenshotAnnotationTool.allCases) { tool in
+                toolButton(tool)
+            }
+
+            Button {
+                _ = annotations.popLast()
+                isPromptFocused = true
+            } label: {
+                Image(systemName: "arrow.uturn.backward")
+                    .font(.system(size: 17, weight: .medium))
+                    .frame(width: 58, height: 58)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.primary)
+            .background(.regularMaterial, in: Circle())
+            .overlay(Circle().stroke(Color.white.opacity(0.16), lineWidth: 1))
+            .shadow(color: .black.opacity(0.3), radius: 16, y: 7)
+            .disabled(annotations.isEmpty)
+            .opacity(annotations.isEmpty ? 0.45 : 1)
+            .help("Undo")
+            .pointerCursor()
         }
-        .padding(20)
-        .background(Color.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .onAppear { isPromptFocused = true }
-        .onExitCommand(perform: onCancel)
+        .padding(.horizontal, 24)
     }
 
-    private var screenshotCanvas: some View {
-        ZStack {
-            Image(nsImage: screenshotImage)
-                .resizable()
-                .interpolation(.high)
-                .frame(width: displayedScreenshotSize.width, height: displayedScreenshotSize.height)
+    private func toolButton(_ tool: ScreenshotAnnotationTool) -> some View {
+        Button {
+            selectedTool = selectedTool == tool ? nil : tool
+            isPromptFocused = true
+        } label: {
+            Image(systemName: tool.iconName)
+                .font(.system(size: 18, weight: .medium))
+                .frame(width: 58, height: 58)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(selectedTool == tool ? Color.white : Color.primary)
+        .background(
+            selectedTool == tool ? Color.accentColor : Color.clear,
+            in: Circle()
+        )
+        .background(.regularMaterial, in: Circle())
+        .overlay(Circle().stroke(Color.white.opacity(0.16), lineWidth: 1))
+        .shadow(color: .black.opacity(0.3), radius: 16, y: 7)
+        .help(tool.accessibilityLabel)
+        .pointerCursor()
+    }
 
+    private var annotationCanvas: some View {
+        GeometryReader { geometryProxy in
             Canvas { context, canvasSize in
-                for annotationStroke in annotationStrokes + [activeStroke] {
-                    guard let firstPoint = annotationStroke.normalizedPoints.first else { continue }
-                    var path = Path()
-                    path.move(to: denormalizedPoint(firstPoint, canvasSize: canvasSize))
-                    for normalizedPoint in annotationStroke.normalizedPoints.dropFirst() {
-                        path.addLine(to: denormalizedPoint(normalizedPoint, canvasSize: canvasSize))
-                    }
-                    context.stroke(path, with: .color(.red), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                for annotation in annotations + [activeAnnotation].compactMap({ $0 }) {
+                    draw(annotation: annotation, context: &context, canvasSize: canvasSize)
                 }
             }
-            .frame(width: displayedScreenshotSize.width, height: displayedScreenshotSize.height)
             .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { dragValue in
-                        let normalizedPoint = CGPoint(
-                            x: min(max(dragValue.location.x / displayedScreenshotSize.width, 0), 1),
-                            y: min(max(dragValue.location.y / displayedScreenshotSize.height, 0), 1)
-                        )
-                        activeStroke.normalizedPoints.append(normalizedPoint)
-                    }
-                    .onEnded { _ in
-                        if activeStroke.normalizedPoints.count > 1 {
-                            annotationStrokes.append(activeStroke)
-                        }
-                        activeStroke = ScreenshotAnnotationStroke(normalizedPoints: [])
-                        isPromptFocused = true
-                    }
-            )
+            .gesture(annotationGesture(canvasSize: geometryProxy.size))
         }
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.white.opacity(0.14), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.35), radius: 20, y: 8)
+        .ignoresSafeArea()
+        .allowsHitTesting(selectedTool != nil)
     }
 
-    private func denormalizedPoint(_ point: CGPoint, canvasSize: CGSize) -> CGPoint {
+    private func annotationGesture(canvasSize: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { dragValue in
+                guard let selectedTool else { return }
+                let normalizedLocation = normalize(dragValue.location, canvasSize: canvasSize)
+                if selectedTool == .eraser {
+                    eraseAnnotation(at: normalizedLocation)
+                    return
+                }
+
+                if activeAnnotation == nil {
+                    activeAnnotation = ScreenshotAnnotation(
+                        tool: selectedTool,
+                        normalizedPoints: [normalizedLocation]
+                    )
+                } else if selectedTool == .pen {
+                    activeAnnotation?.normalizedPoints.append(normalizedLocation)
+                } else if activeAnnotation?.normalizedPoints.count == 1 {
+                    activeAnnotation?.normalizedPoints.append(normalizedLocation)
+                } else {
+                    activeAnnotation?.normalizedPoints[1] = normalizedLocation
+                }
+            }
+            .onEnded { _ in
+                if let activeAnnotation,
+                   activeAnnotation.normalizedPoints.count > 1 {
+                    annotations.append(activeAnnotation)
+                }
+                activeAnnotation = nil
+                isPromptFocused = true
+            }
+    }
+
+    private func draw(
+        annotation: ScreenshotAnnotation,
+        context: inout GraphicsContext,
+        canvasSize: CGSize
+    ) {
+        guard let firstPoint = annotation.normalizedPoints.first else { return }
+        let firstCanvasPoint = denormalize(firstPoint, canvasSize: canvasSize)
+        var path = Path()
+
+        switch annotation.tool {
+        case .pen:
+            path.move(to: firstCanvasPoint)
+            for point in annotation.normalizedPoints.dropFirst() {
+                path.addLine(to: denormalize(point, canvasSize: canvasSize))
+            }
+        case .arrow:
+            guard let lastPoint = annotation.normalizedPoints.last else { return }
+            let lastCanvasPoint = denormalize(lastPoint, canvasSize: canvasSize)
+            path.move(to: firstCanvasPoint)
+            path.addLine(to: lastCanvasPoint)
+            appendArrowhead(to: &path, startPoint: firstCanvasPoint, endPoint: lastCanvasPoint)
+        case .rectangle, .ellipse:
+            guard let lastPoint = annotation.normalizedPoints.last else { return }
+            let annotationRect = canvasRect(
+                from: firstPoint,
+                to: lastPoint,
+                canvasSize: canvasSize
+            )
+            if annotation.tool == .rectangle {
+                path.addRoundedRect(in: annotationRect, cornerSize: CGSize(width: 8, height: 8))
+            } else {
+                path.addEllipse(in: annotationRect)
+            }
+        case .eraser:
+            return
+        }
+
+        context.stroke(
+            path,
+            with: .color(.red),
+            style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round)
+        )
+    }
+
+    private func appendArrowhead(to path: inout Path, startPoint: CGPoint, endPoint: CGPoint) {
+        let angle = atan2(endPoint.y - startPoint.y, endPoint.x - startPoint.x)
+        let arrowheadLength: CGFloat = 18
+        let arrowheadAngle: CGFloat = .pi / 6
+        path.move(to: CGPoint(
+            x: endPoint.x - arrowheadLength * cos(angle - arrowheadAngle),
+            y: endPoint.y - arrowheadLength * sin(angle - arrowheadAngle)
+        ))
+        path.addLine(to: endPoint)
+        path.addLine(to: CGPoint(
+            x: endPoint.x - arrowheadLength * cos(angle + arrowheadAngle),
+            y: endPoint.y - arrowheadLength * sin(angle + arrowheadAngle)
+        ))
+    }
+
+    private func eraseAnnotation(at normalizedLocation: CGPoint) {
+        guard let annotationIndex = annotations.lastIndex(where: { annotation in
+            annotationBounds(annotation).insetBy(dx: -0.025, dy: -0.025).contains(normalizedLocation)
+        }) else { return }
+        annotations.remove(at: annotationIndex)
+    }
+
+    private func annotationBounds(_ annotation: ScreenshotAnnotation) -> CGRect {
+        let xCoordinates = annotation.normalizedPoints.map(\.x)
+        let yCoordinates = annotation.normalizedPoints.map(\.y)
+        guard let minimumX = xCoordinates.min(), let maximumX = xCoordinates.max(),
+              let minimumY = yCoordinates.min(), let maximumY = yCoordinates.max() else {
+            return .zero
+        }
+        return CGRect(
+            x: minimumX,
+            y: minimumY,
+            width: max(maximumX - minimumX, 0.01),
+            height: max(maximumY - minimumY, 0.01)
+        )
+    }
+
+    private func normalize(_ point: CGPoint, canvasSize: CGSize) -> CGPoint {
+        CGPoint(
+            x: min(max(point.x / max(canvasSize.width, 1), 0), 1),
+            y: min(max(point.y / max(canvasSize.height, 1), 0), 1)
+        )
+    }
+
+    private func denormalize(_ point: CGPoint, canvasSize: CGSize) -> CGPoint {
         CGPoint(x: point.x * canvasSize.width, y: point.y * canvasSize.height)
     }
 
+    private func canvasRect(from firstPoint: CGPoint, to lastPoint: CGPoint, canvasSize: CGSize) -> CGRect {
+        CGRect(
+            x: min(firstPoint.x, lastPoint.x) * canvasSize.width,
+            y: min(firstPoint.y, lastPoint.y) * canvasSize.height,
+            width: max(abs(lastPoint.x - firstPoint.x) * canvasSize.width, 8),
+            height: max(abs(lastPoint.y - firstPoint.y) * canvasSize.height, 8)
+        )
+    }
+
+    private var canSubmit: Bool {
+        !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !annotations.isEmpty
+    }
+
     private func submit() {
+        guard canSubmit else { return }
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedPrompt.isEmpty else { return }
-        onSubmit(trimmedPrompt, annotationStrokes)
+        let submittedPrompt = trimmedPrompt.isEmpty
+            ? "Explain what I marked and guide me through it."
+            : trimmedPrompt
+        onSubmit(submittedPrompt, annotations)
     }
 }

@@ -77,9 +77,6 @@ final class CompanionManager: ObservableObject {
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
-    /// Scheduled hide for transient cursor mode — cancelled if the user
-    /// speaks again before the delay elapses.
-    private var transientHideTask: Task<Void, Never>?
     private var annotationClearTask: Task<Void, Never>?
 
     /// True when all three required permissions (accessibility, screen recording,
@@ -192,24 +189,32 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// User preference for whether the OpenClicky cursor should be shown.
-    /// When toggled off, the overlay is hidden and push-to-talk is disabled.
-    /// Persisted to UserDefaults so the choice survives app restarts.
-    @Published var isOpenClickyCursorEnabled: Bool = UserDefaults.standard.object(forKey: "isOpenClickyCursorEnabled") == nil
+    @Published var isOpenClickyEnabled: Bool = UserDefaults.standard.object(forKey: "isOpenClickyEnabled") == nil
         ? true
-        : UserDefaults.standard.bool(forKey: "isOpenClickyCursorEnabled")
+        : UserDefaults.standard.bool(forKey: "isOpenClickyEnabled")
 
-    func setOpenClickyCursorEnabled(_ enabled: Bool) {
-        isOpenClickyCursorEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "isOpenClickyCursorEnabled")
-        transientHideTask?.cancel()
-        transientHideTask = nil
+    func setOpenClickyEnabled(_ enabled: Bool) {
+        isOpenClickyEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isOpenClickyEnabled")
 
         if enabled {
-            overlayWindowManager.hasShownOverlayBefore = true
-            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
-            isOverlayVisible = true
+            refreshAllPermissions()
+            if visualPromptPermissionsGranted {
+                overlayWindowManager.hasShownOverlayBefore = true
+                overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+                isOverlayVisible = true
+            } else {
+                NotificationCenter.default.post(name: .openClickyShowPanel, object: nil)
+            }
         } else {
+            globalPushToTalkShortcutMonitor.stop()
+            buddyDictationManager.cancelCurrentDictation()
+            pendingKeyboardShortcutStartTask?.cancel()
+            currentResponseTask?.cancel()
+            currentResponseTask = nil
+            systemTTSClient.stopPlayback()
+            clearScreenAnnotations()
+            displayedResponseText = ""
             overlayWindowManager.hideOverlay()
             isOverlayVisible = false
         }
@@ -228,7 +233,7 @@ final class CompanionManager: ObservableObject {
             refreshAvailableModels()
         }
 
-        if visualPromptPermissionsGranted && isOpenClickyCursorEnabled {
+        if visualPromptPermissionsGranted && isOpenClickyEnabled {
             overlayWindowManager.hasShownOverlayBefore = true
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
@@ -245,7 +250,6 @@ final class CompanionManager: ObservableObject {
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
-        transientHideTask?.cancel()
         annotationClearTask?.cancel()
 
         currentResponseTask?.cancel()
@@ -262,7 +266,7 @@ final class CompanionManager: ObservableObject {
         let currentlyHasAccessibility = WindowPositionManager.hasAccessibilityPermission()
         hasAccessibilityPermission = currentlyHasAccessibility
 
-        if currentlyHasAccessibility {
+        if currentlyHasAccessibility && isOpenClickyEnabled {
             globalPushToTalkShortcutMonitor.start()
         } else {
             globalPushToTalkShortcutMonitor.stop()
@@ -309,7 +313,7 @@ final class CompanionManager: ObservableObject {
                     guard didCapture else { return }
                     hasScreenContentPermission = true
                     UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
-                    if visualPromptPermissionsGranted && !isOverlayVisible && isOpenClickyCursorEnabled {
+                    if visualPromptPermissionsGranted && !isOverlayVisible && isOpenClickyEnabled {
                         overlayWindowManager.hasShownOverlayBefore = true
                         overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                         isOverlayVisible = true
@@ -374,15 +378,6 @@ final class CompanionManager: ObservableObject {
                     self.voiceState = .processing
                 } else {
                     self.voiceState = .idle
-                    // If the user pressed and released the hotkey without
-                    // saying anything, no response task runs — schedule the
-                    // transient hide here so the overlay doesn't get stuck.
-                    // Only do this when no response is in flight, otherwise
-                    // the brief idle gap between recording and processing
-                    // would prematurely hide the overlay.
-                    if self.currentResponseTask == nil {
-                        self.scheduleTransientHideIfNeeded()
-                    }
                 }
             }
     }
@@ -406,6 +401,7 @@ final class CompanionManager: ObservableObject {
     }
 
     private func presentScreenshotPrompt() {
+        guard isOpenClickyEnabled else { return }
         guard hasScreenRecordingPermission && hasScreenContentPermission else {
             interactionErrorMessage = "Grant Screen Recording and Screen Content access to use screenshot prompts."
             NotificationCenter.default.post(name: .openClickyShowPanel, object: nil)
@@ -416,14 +412,14 @@ final class CompanionManager: ObservableObject {
         NotificationCenter.default.post(name: .openClickyDismissPanel, object: nil)
         Task {
             do {
-                let screenCapture = try await CompanionScreenCaptureUtility.captureFrontmostWindowAsJPEG()
+                let screenCapture = try await CompanionScreenCaptureUtility.captureScreenContainingPointerAsJPEG()
                 screenshotPromptWindowManager.show(
                     screenCapture: screenCapture,
                     providerName: selectedAIProvider.displayName,
                     modelName: selectedModel
                 )
             } catch {
-                let message = "Could not capture the frontmost window: \(error.localizedDescription)"
+                let message = "Could not capture the current display: \(error.localizedDescription)"
                 interactionErrorMessage = message
                 displayedResponseText = message
             }
@@ -433,18 +429,8 @@ final class CompanionManager: ObservableObject {
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
         case .pressed:
+            guard isOpenClickyEnabled else { return }
             guard !buddyDictationManager.isDictationInProgress else { return }
-
-            // Cancel any pending transient hide so the overlay stays visible
-            transientHideTask?.cancel()
-            transientHideTask = nil
-
-            // If the cursor is hidden, bring it back transiently for this interaction
-            if !isOpenClickyCursorEnabled && !isOverlayVisible {
-                overlayWindowManager.hasShownOverlayBefore = true
-                overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
-                isOverlayVisible = true
-            }
 
             // Dismiss the menu bar panel so it doesn't cover the screen
             NotificationCenter.default.post(name: .openClickyDismissPanel, object: nil)
@@ -672,38 +658,7 @@ final class CompanionManager: ObservableObject {
 
             if !Task.isCancelled {
                 voiceState = .idle
-                scheduleTransientHideIfNeeded()
             }
-        }
-    }
-
-    /// If the cursor is in transient mode (user toggled "Show Clicky" off),
-    /// waits for TTS playback and any pointing animation to finish, then
-    /// fades out the overlay after a 1-second pause. Cancelled automatically
-    /// if the user starts another push-to-talk interaction.
-    private func scheduleTransientHideIfNeeded() {
-        guard !isOpenClickyCursorEnabled && isOverlayVisible else { return }
-
-        transientHideTask?.cancel()
-        transientHideTask = Task {
-            // Wait for TTS audio to finish playing
-            while systemTTSClient.isPlaying {
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                guard !Task.isCancelled else { return }
-            }
-
-            // Wait for pointing animation to finish (location is cleared
-            // when the buddy flies back to the cursor)
-            while detectedElementScreenLocation != nil {
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                guard !Task.isCancelled else { return }
-            }
-
-            // Pause 1s after everything finishes, then fade out
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            guard !Task.isCancelled else { return }
-            overlayWindowManager.fadeOutAndHideOverlay()
-            isOverlayVisible = false
         }
     }
 
