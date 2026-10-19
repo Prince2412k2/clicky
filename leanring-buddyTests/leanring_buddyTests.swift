@@ -102,4 +102,21 @@ struct leanring_buddyTests {
         #expect(globalLocation == CGPoint(x: 600, y: 550))
     }
 
+    @Test func parsesGuidedWalkthroughContinuation() {
+        let result = GuidedSessionParser.parse(
+            from: "Click the shader tab. [GUIDE:continue]\n[DRAW:pointer:200,100:shader tab]"
+        )
+
+        #expect(result.directive == .continueGuiding)
+        #expect(result.responseText.contains("Click the shader tab."))
+        #expect(result.responseText.contains("[DRAW:pointer:200,100:shader tab]"))
+    }
+
+    @Test func parsesGuidedWalkthroughCompletion() {
+        let result = GuidedSessionParser.parse(from: "Your texture is connected. [GUIDE:done]")
+
+        #expect(result.directive == .done)
+        #expect(result.responseText == "Your texture is connected.")
+    }
+
 }

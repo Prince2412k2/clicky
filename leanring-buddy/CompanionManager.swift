@@ -26,6 +26,8 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
     @Published private(set) var displayedResponseText = ""
     @Published private(set) var interactionErrorMessage: String?
+    @Published private(set) var isGuidedSessionActive = false
+    @Published private(set) var isWaitingForGuidedAction = false
     @Published private(set) var hasAccessibilityPermission = false
     @Published private(set) var hasScreenRecordingPermission = false
     @Published private(set) var hasMicrophonePermission = false
@@ -73,11 +75,16 @@ final class CompanionManager: ObservableObject {
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var screenshotShortcutCancellable: AnyCancellable?
+    private var observedClickCancellable: AnyCancellable?
+    private var escapeKeyCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
     private var annotationClearTask: Task<Void, Never>?
+    private var guidedAdvanceTask: Task<Void, Never>?
+    private var guidedSessionGoal = ""
+    private var guidedStepCount = 0
 
     /// True when all three required permissions (accessibility, screen recording,
     /// microphone) are granted. Used by the panel to show a single "all good" state.
@@ -161,6 +168,7 @@ final class CompanionManager: ObservableObject {
         displayedResponseText = ""
         clearDetectedElementLocation()
         clearScreenAnnotations()
+        stopGuidedSession()
     }
 
     func refreshAvailableModels() {
@@ -215,6 +223,7 @@ final class CompanionManager: ObservableObject {
             systemTTSClient.stopPlayback()
             clearScreenAnnotations()
             displayedResponseText = ""
+            stopGuidedSession()
             overlayWindowManager.hideOverlay()
             isOverlayVisible = false
         }
@@ -227,6 +236,7 @@ final class CompanionManager: ObservableObject {
         bindAudioPowerLevel()
         bindShortcutTransitions()
         bindScreenshotShortcut()
+        bindGuidedSessionEvents()
         if selectedAIProvider == .ollama
             || (selectedAIProvider == .chatGPT && chatGPTAuthenticationManager.isSignedIn)
             || (selectedAIProvider.requiresAPIKey && hasAPIKey(for: selectedAIProvider)) {
@@ -256,10 +266,13 @@ final class CompanionManager: ObservableObject {
         currentResponseTask = nil
         shortcutTransitionCancellable?.cancel()
         screenshotShortcutCancellable?.cancel()
+        observedClickCancellable?.cancel()
+        escapeKeyCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
+        stopGuidedSession()
     }
 
     func refreshAllPermissions() {
@@ -400,6 +413,54 @@ final class CompanionManager: ObservableObject {
             }
     }
 
+    private func bindGuidedSessionEvents() {
+        observedClickCancellable = globalPushToTalkShortcutMonitor
+            .observedClickPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] clickLocation in
+                self?.handleObservedClickDuringGuidedSession(clickLocation)
+            }
+        escapeKeyCancellable = globalPushToTalkShortcutMonitor
+            .escapeKeyPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                self?.stopGuidedSession()
+            }
+    }
+
+    private func handleObservedClickDuringGuidedSession(_ clickLocation: CGPoint) {
+        guard isOpenClickyEnabled,
+              isGuidedSessionActive,
+              isWaitingForGuidedAction,
+              voiceState == .idle else { return }
+        guard !NSApp.windows.contains(where: { window in
+            window.isVisible && window.frame.contains(clickLocation)
+        }) else { return }
+
+        isWaitingForGuidedAction = false
+        clearScreenAnnotations()
+        guidedAdvanceTask?.cancel()
+        guidedAdvanceTask = Task {
+            try? await Task.sleep(for: .milliseconds(900))
+            guard !Task.isCancelled else { return }
+            do {
+                let screenCapture = try await CompanionScreenCaptureUtility.captureScreenContainingPointerAsJPEG()
+                let followUpPrompt = """
+                The user performed the highlighted action for this goal: \(guidedSessionGoal)
+                Inspect the new screenshot. Give only the next concrete step, or finish the walkthrough if the goal is complete.
+                """
+                sendPromptWithScreenshot(
+                    transcript: followUpPrompt,
+                    suppliedScreenCaptures: [screenCapture],
+                    isGuidedFollowUp: true
+                )
+            } catch {
+                interactionErrorMessage = "Could not continue the walkthrough: \(error.localizedDescription)"
+                stopGuidedSession()
+            }
+        }
+    }
+
     private func presentScreenshotPrompt() {
         guard isOpenClickyEnabled else { return }
         guard hasScreenRecordingPermission && hasScreenContentPermission else {
@@ -500,6 +561,9 @@ final class CompanionManager: ObservableObject {
 
     use annotations to teach multi-step spatial ideas, compare areas, or make a target unmistakable. keep labels to one through four words. do not draw when the question is unrelated to the screenshot. never invent coordinates outside the supplied image dimensions.
 
+    guided walkthroughs:
+    when the user asks how to complete a task in the visible app, act as a live guide. give exactly one actionable step at a time, draw the target, and append [GUIDE:continue]. after the user acts, you will receive a new screenshot and must inspect what actually changed before giving the next step. never repeat a completed step. when the goal is visibly complete, append [GUIDE:done]. for ordinary questions that do not need a walkthrough, do not add a GUIDE tag.
+
     examples:
     - user asks how to color grade in final cut: "you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector]"
     - user asks what html is: "html stands for hypertext markup language, it's basically the skeleton of every web page. curious how it connects to the css you're looking at? [POINT:none]"
@@ -514,8 +578,12 @@ final class CompanionManager: ObservableObject {
     /// buddy fly to the referenced element.
     private func sendPromptWithScreenshot(
         transcript: String,
-        suppliedScreenCaptures: [CompanionScreenCapture]? = nil
+        suppliedScreenCaptures: [CompanionScreenCapture]? = nil,
+        isGuidedFollowUp: Bool = false
     ) {
+        if !isGuidedFollowUp {
+            stopGuidedSession(clearAnnotations: false)
+        }
         currentResponseTask?.cancel()
         systemTTSClient.stopPlayback()
         clearScreenAnnotations()
@@ -578,7 +646,8 @@ final class CompanionManager: ObservableObject {
                 guard !Task.isCancelled else { return }
 
                 // Parse the provider-independent [POINT:...] tag.
-                let annotationParseResult = ScreenAnnotationParser.parse(from: fullResponseText)
+                let guidedParseResult = GuidedSessionParser.parse(from: fullResponseText)
+                let annotationParseResult = ScreenAnnotationParser.parse(from: guidedParseResult.responseText)
                 let parseResult = Self.parsePointingCoordinates(from: annotationParseResult.responseText)
                 let spokenText = parseResult.spokenText
                 displayedResponseText = spokenText
@@ -619,6 +688,12 @@ final class CompanionManager: ObservableObject {
                     }
                     scheduleAnnotationClearIfNeeded()
                 }
+
+                updateGuidedSession(
+                    directive: guidedParseResult.directive,
+                    originalPrompt: transcript,
+                    isGuidedFollowUp: isGuidedFollowUp
+                )
 
                 if let pointCoordinate = parseResult.coordinate,
                    let targetScreenCapture {
@@ -675,6 +750,48 @@ final class CompanionManager: ObservableObject {
         annotationClearTask?.cancel()
         annotationClearTask = nil
         screenAnnotations = []
+    }
+
+    func stopGuidedSession(clearAnnotations: Bool = true) {
+        guidedAdvanceTask?.cancel()
+        guidedAdvanceTask = nil
+        isGuidedSessionActive = false
+        isWaitingForGuidedAction = false
+        guidedSessionGoal = ""
+        guidedStepCount = 0
+        if clearAnnotations {
+            clearScreenAnnotations()
+        }
+    }
+
+    private func updateGuidedSession(
+        directive: GuidedSessionDirective?,
+        originalPrompt: String,
+        isGuidedFollowUp: Bool
+    ) {
+        switch directive {
+        case .continueGuiding:
+            annotationClearTask?.cancel()
+            annotationClearTask = nil
+            if !isGuidedFollowUp {
+                guidedSessionGoal = originalPrompt
+                guidedStepCount = 0
+            }
+            guidedStepCount += 1
+            guard guidedStepCount <= 15 else {
+                interactionErrorMessage = "The walkthrough stopped after 15 steps. Start it again if you want to continue."
+                stopGuidedSession(clearAnnotations: false)
+                return
+            }
+            isGuidedSessionActive = true
+            isWaitingForGuidedAction = true
+        case .done:
+            stopGuidedSession(clearAnnotations: false)
+        case nil:
+            if isGuidedFollowUp {
+                stopGuidedSession(clearAnnotations: false)
+            }
+        }
     }
 
     private func scheduleAnnotationClearIfNeeded() {

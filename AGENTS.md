@@ -19,6 +19,7 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: The selected model embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Teaching Annotations**: Provider-independent `[DRAW:...]` tags render temporary click-through arrows, boxes, highlights, pointers, and labels over the relevant screen or window.
+- **Guided Walkthroughs**: `[GUIDE:continue]` starts a bounded live session. OpenClicky observes the user's next click, waits for the app to update, captures the pointer's display, and asks the selected model for one next step. Escape, the menu action, or `[GUIDE:done]` stops the session.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
 - **Privacy**: No telemetry, email collection, automatic login item, creator service, or mandatory proxy
 
@@ -34,6 +35,8 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 
 **Visual prompt launcher**: Control+Command freezes the current display under a borderless full-screen layer. A Spotlight-style field receives focus immediately; pen, arrow, rectangle, ellipse, eraser, and undo controls annotate the capture without showing a conventional screenshot window.
 
+**Bounded guidance**: Guided walkthroughs are click-observation only. They never intercept or synthesize user input, ignore clicks in OpenClicky's own windows, and stop after fifteen steps unless ended earlier.
+
 ## Key Files
 
 | File | Lines | Purpose |
@@ -46,6 +49,7 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 | `CompanionScreenCaptureUtility.swift` | ~120 | Pointer-display capture using ScreenCaptureKit. |
 | `ScreenshotPromptWindow.swift` | ~500 | Full-display visual prompt launcher with focused input and Excalidraw-style annotation tools. |
 | `ScreenAnnotation.swift` | ~230 | Drawing-tag parser and click-through teaching overlay for arrows, boxes, highlights, pointers, and labels. |
+| `GuidedSession.swift` | ~35 | Parser for provider-independent guided-session continuation and completion tags. |
 | `ChatGPTAuthenticationManager.swift` | ~650 | ChatGPT OAuth registration, PKCE, ID-token verification, Keychain storage, refresh, recovery, and revocation. |
 | `OpenAIResponsesAPI.swift` | ~180 | ChatGPT-plan model discovery and streaming public Responses API client. |
 | `OpenClickyServices.swift` | ~430 | Provider definitions, secure API-key storage, model discovery, and direct OpenAI/Anthropic/Gemini/Ollama clients. |

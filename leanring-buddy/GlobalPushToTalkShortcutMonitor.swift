@@ -15,6 +15,8 @@ import Foundation
 final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     let shortcutTransitionPublisher = PassthroughSubject<BuddyPushToTalkShortcut.ShortcutTransition, Never>()
     let screenshotShortcutPublisher = PassthroughSubject<Void, Never>()
+    let observedClickPublisher = PassthroughSubject<CGPoint, Never>()
+    let escapeKeyPublisher = PassthroughSubject<Void, Never>()
 
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
@@ -36,7 +38,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         // refreshAllPermissions → start() every few seconds.
         guard globalEventTap == nil else { return }
 
-        let monitoredEventTypes: [CGEventType] = [.flagsChanged, .keyDown, .keyUp]
+        let monitoredEventTypes: [CGEventType] = [.flagsChanged, .keyDown, .keyUp, .leftMouseDown]
         let eventMask = monitoredEventTypes.reduce(CGEventMask(0)) { currentMask, eventType in
             currentMask | (CGEventMask(1) << eventType.rawValue)
         }
@@ -110,6 +112,13 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         }
 
         let eventKeyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+        if eventType == .leftMouseDown {
+            observedClickPublisher.send(NSEvent.mouseLocation)
+            return Unmanaged.passUnretained(event)
+        }
+        if eventType == .keyDown && eventKeyCode == 53 {
+            escapeKeyPublisher.send()
+        }
         let modifierFlags = NSEvent.ModifierFlags(rawValue: UInt(event.flags.rawValue))
             .intersection(.deviceIndependentFlagsMask)
         let screenshotShortcutFlags: NSEvent.ModifierFlags = [.control, .command]

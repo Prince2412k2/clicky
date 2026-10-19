@@ -411,6 +411,17 @@ struct CompanionPanelView: View {
 
     private var actionsSection: some View {
         VStack(spacing: 0) {
+            if companionManager.isGuidedSessionActive {
+                Button {
+                    companionManager.stopGuidedSession()
+                } label: {
+                    actionRow(title: "Stop Walkthrough", iconName: "stop.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.red)
+                .pointerCursor()
+            }
+
             Button {
                 companionManager.clearConversation()
             } label: {
@@ -454,6 +465,8 @@ struct CompanionPanelView: View {
     private var statusText: String {
         guard companionManager.isOpenClickyEnabled else { return "Stopped" }
         guard companionManager.visualPromptPermissionsGranted else { return "Needs permission" }
+        if companionManager.isWaitingForGuidedAction { return "Waiting for next step" }
+        if companionManager.isGuidedSessionActive { return "Guiding" }
         guard companionManager.hasMicrophonePermission else { return "Screenshot ready" }
         switch companionManager.voiceState {
         case .idle: return "Ready"
