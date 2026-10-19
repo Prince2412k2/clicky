@@ -32,7 +32,7 @@ jobs:
             --deep \
             --sign - \
             --entitlements leanring-buddy/leanring-buddy.entitlements \
-            "$RUNNER_TEMP/ClickyDerivedData/Build/Products/Debug/leanring-buddy.app"
+            "$RUNNER_TEMP/ClickyDerivedData/Build/Products/Debug/Clicky.app"
 
       - name: Package application
         run: |
@@ -41,7 +41,7 @@ jobs:
             -k \
             --sequesterRsrc \
             --keepParent \
-            "$RUNNER_TEMP/ClickyDerivedData/Build/Products/Debug/leanring-buddy.app" \
+            "$RUNNER_TEMP/ClickyDerivedData/Build/Products/Debug/Clicky.app" \
             "$RUNNER_TEMP/Clicky-Test-Build.zip"
 
       - name: Upload application
