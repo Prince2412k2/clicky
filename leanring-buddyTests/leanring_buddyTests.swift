@@ -9,6 +9,7 @@ import Testing
 import CoreGraphics
 @testable import OpenClicky
 
+@MainActor
 struct leanring_buddyTests {
 
     @Test func firstPermissionRequestUsesSystemPromptOnly() async throws {
