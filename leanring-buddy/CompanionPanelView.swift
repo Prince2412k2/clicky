@@ -4,12 +4,16 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @ObservedObject private var authenticationManager: ChatGPTAuthenticationManager
+    @ObservedObject private var localModelState: LocalSpeechModelState
+    @ObservedObject private var updater: OpenClickyUpdater
     @State private var apiKeyInput = ""
     @State private var apiKeySaveMessage: String?
 
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
         authenticationManager = companionManager.chatGPTAuthenticationManager
+        localModelState = .shared
+        updater = .shared
     }
 
     var body: some View {
@@ -29,6 +33,11 @@ struct CompanionPanelView: View {
         .frame(width: 310)
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .onAppear {
+            if updater.state == .idle {
+                updater.checkForUpdates()
+            }
+        }
         .onChange(of: authenticationManager.isSignedIn) { _, isSignedIn in
             if isSignedIn {
                 companionManager.refreshAvailableModels()
@@ -174,6 +183,7 @@ struct CompanionPanelView: View {
             }
 
             accountSection
+            localModelsSection
 
             if let errorMessage = visibleErrorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
@@ -314,13 +324,32 @@ struct CompanionPanelView: View {
         selection: String,
         @ViewBuilder menuContent: () -> MenuContent
     ) -> some View {
-        Menu(content: menuContent) {
-            rowLabel(title: title, iconName: iconName, value: selection, showsChevron: true)
+        HStack(spacing: 10) {
+            Image(systemName: iconName)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 22)
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+            Spacer(minLength: 8)
+            Menu(content: menuContent) {
+                HStack(spacing: 5) {
+                    Text(selection)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .pointerCursor()
         }
-        .menuStyle(.borderlessButton)
-        .buttonStyle(.plain)
-        .frame(maxWidth: .infinity)
-        .pointerCursor()
+        .padding(.horizontal, 12)
+        .frame(width: 310, height: 36)
     }
 
     private func valueRow(title: String, iconName: String, value: String) -> some View {
@@ -362,6 +391,83 @@ struct CompanionPanelView: View {
                 Image(systemName: "checkmark")
             }
         }
+    }
+
+    private var localModelsSection: some View {
+        VStack(spacing: 0) {
+            modelStatusRow(
+                title: "Parakeet",
+                iconName: "waveform.badge.mic",
+                state: localModelState.transcription,
+                prepareAction: companionManager.prepareLocalTranscriptionModel
+            )
+            modelStatusRow(
+                title: "Kokoro",
+                iconName: "speaker.wave.2",
+                state: localModelState.voice,
+                prepareAction: companionManager.prepareLocalVoiceModel
+            )
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func modelStatusRow(
+        title: String,
+        iconName: String,
+        state: LocalModelPreparationState,
+        prepareAction: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: iconName)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.system(size: 11, weight: .medium))
+                    Text(state.displayText)
+                        .font(.system(size: 9))
+                        .foregroundStyle(modelStatusColor(state))
+                }
+                if let progress = state.progress {
+                    ProgressView(value: progress)
+                        .progressViewStyle(.linear)
+                        .controlSize(.mini)
+                }
+            }
+            Spacer()
+            if state == .notDownloaded || isFailedModelState(state) {
+                Button(action: prepareAction) {
+                    Image(systemName: "arrow.down.circle")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.tint)
+                .help("Download model")
+                .pointerCursor()
+            } else if state == .ready || state == .downloaded {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(height: state.progress == nil ? 34 : 43)
+    }
+
+    private func modelStatusColor(_ state: LocalModelPreparationState) -> Color {
+        switch state {
+        case .ready, .downloaded: return .green
+        case .failed: return .red
+        default: return .secondary
+        }
+    }
+
+    private func isFailedModelState(_ state: LocalModelPreparationState) -> Bool {
+        if case .failed = state { return true }
+        return false
     }
 
     private var permissionsSection: some View {
@@ -432,6 +538,8 @@ struct CompanionPanelView: View {
                 .pointerCursor()
             }
 
+            updateAction
+
             Button {
                 companionManager.clearConversation()
             } label: {
@@ -451,18 +559,79 @@ struct CompanionPanelView: View {
         .padding(.vertical, 6)
     }
 
+    @ViewBuilder
+    private var updateAction: some View {
+        if !updater.isRunningFromApplications {
+            Button {
+                updater.installCurrentApplication()
+            } label: {
+                actionRow(title: "Install in Applications", iconName: "square.and.arrow.down")
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+        } else {
+            switch updater.state {
+            case .available(let build, _):
+                Button {
+                    updater.installAvailableUpdate()
+                } label: {
+                    actionRow(title: "Install Update \(build)", iconName: "arrow.down.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.tint)
+                .pointerCursor()
+            case .checking:
+                progressActionRow(title: "Checking for Updates")
+            case .downloading:
+                progressActionRow(title: "Downloading Update")
+            case .installing:
+                progressActionRow(title: "Installing Update")
+            case .failed:
+                Button {
+                    updater.checkForUpdates()
+                } label: {
+                    actionRow(title: "Update Failed — Retry", iconName: "exclamationmark.arrow.triangle.2.circlepath")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.red)
+                .pointerCursor()
+            case .idle, .upToDate:
+                Button {
+                    updater.checkForUpdates()
+                } label: {
+                    actionRow(title: "Check for Updates", iconName: "arrow.triangle.2.circlepath")
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+        }
+    }
+
+    private func progressActionRow(title: String) -> some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 22)
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 32)
+    }
+
     private func actionRow(title: String, iconName: String) -> some View {
         HStack(spacing: 10) {
             Image(systemName: iconName)
                 .foregroundStyle(.secondary)
                 .frame(width: 22)
             Text(title)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
             Spacer()
         }
         .contentShape(Rectangle())
         .padding(.horizontal, 12)
-        .frame(height: 36)
+        .frame(height: 32)
     }
 
     private var visibleErrorMessage: String? {

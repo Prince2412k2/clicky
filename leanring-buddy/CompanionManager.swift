@@ -84,6 +84,7 @@ final class CompanionManager: ObservableObject {
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
     private var annotationClearTask: Task<Void, Never>?
+    private var responseClearTask: Task<Void, Never>?
     private var guidedAdvanceTask: Task<Void, Never>?
     private var guidedSessionGoal = ""
     private var guidedStepCount = 0
@@ -147,6 +148,28 @@ final class CompanionManager: ObservableObject {
         localKokoroTTSClient.stopPlayback()
         speechOutput = output
         UserDefaults.standard.set(output.rawValue, forKey: "speechOutput")
+    }
+
+    func prepareLocalVoiceModel() {
+        Task {
+            do {
+                try await localKokoroTTSClient.prepareModel()
+                providerErrorMessage = nil
+            } catch {
+                providerErrorMessage = "Could not prepare Kokoro Local: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func prepareLocalTranscriptionModel() {
+        Task {
+            do {
+                try await LocalParakeetTranscriptionProvider().prepare()
+                providerErrorMessage = nil
+            } catch {
+                providerErrorMessage = "Could not prepare Parakeet Local: \(error.localizedDescription)"
+            }
+        }
     }
 
     func hasAPIKey(for provider: OpenClickyAIProvider) -> Bool {
@@ -227,6 +250,7 @@ final class CompanionManager: ObservableObject {
             LocalParakeetTranscriptionProvider.unloadModels()
             clearScreenAnnotations()
             displayedResponseText = ""
+            responseClearTask?.cancel()
             stopGuidedSession()
             overlayWindowManager.hideOverlay()
             isOverlayVisible = false
@@ -272,6 +296,7 @@ final class CompanionManager: ObservableObject {
         localKokoroTTSClient.unloadModels()
         LocalParakeetTranscriptionProvider.unloadModels()
         annotationClearTask?.cancel()
+        responseClearTask?.cancel()
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
@@ -449,6 +474,8 @@ final class CompanionManager: ObservableObject {
         }) else { return }
 
         isWaitingForGuidedAction = false
+        displayedResponseText = ""
+        responseClearTask?.cancel()
         clearScreenAnnotations()
         guidedAdvanceTask?.cancel()
         guidedAdvanceTask = Task {
@@ -603,6 +630,8 @@ final class CompanionManager: ObservableObject {
         systemTTSClient.stopPlayback()
         localKokoroTTSClient.stopPlayback()
         clearScreenAnnotations()
+        responseClearTask?.cancel()
+        responseClearTask = nil
 
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
@@ -707,7 +736,14 @@ final class CompanionManager: ObservableObject {
                 }
 
                 updateGuidedSession(
-                    directive: guidedParseResult.directive,
+                    directive: resolvedGuidedDirective(
+                        explicitDirective: guidedParseResult.directive,
+                        prompt: transcript,
+                        isGuidedFollowUp: isGuidedFollowUp,
+                        hasVisualTarget: !screenAnnotations.isEmpty
+                            || parseResult.coordinate != nil
+                            || computerActionParseResult.clickAction != nil
+                    ),
                     originalPrompt: transcript,
                     isGuidedFollowUp: isGuidedFollowUp
                 )
@@ -751,8 +787,12 @@ final class CompanionManager: ObservableObject {
                     case .localKokoro:
                         do {
                             try await localKokoroTTSClient.speakText(spokenText)
+                            providerErrorMessage = nil
                             voiceState = .responding
+                        } catch is CancellationError {
+                            throw CancellationError()
                         } catch {
+                            localKokoroTTSClient.stopPlayback()
                             providerErrorMessage = "Local voice unavailable; using Mac Voice. \(error.localizedDescription)"
                             systemTTSClient.speakText(spokenText)
                             voiceState = .responding
@@ -761,6 +801,7 @@ final class CompanionManager: ObservableObject {
                         break
                     }
                 }
+                scheduleResponseTextClear()
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
@@ -780,6 +821,46 @@ final class CompanionManager: ObservableObject {
             systemTTSClient.speakText(displayedResponseText)
             voiceState = .responding
         }
+        scheduleResponseTextClear()
+    }
+
+    private func scheduleResponseTextClear() {
+        responseClearTask?.cancel()
+        responseClearTask = Task {
+            while systemTTSClient.isPlaying || localKokoroTTSClient.isPlaying {
+                try? await Task.sleep(for: .milliseconds(200))
+                guard !Task.isCancelled else { return }
+            }
+            let delay: Duration = speechOutput == .textOnly ? .seconds(10) : .seconds(4)
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            displayedResponseText = ""
+        }
+    }
+
+    private func resolvedGuidedDirective(
+        explicitDirective: GuidedSessionDirective?,
+        prompt: String,
+        isGuidedFollowUp: Bool,
+        hasVisualTarget: Bool
+    ) -> GuidedSessionDirective? {
+        if let explicitDirective { return explicitDirective }
+        guard hasVisualTarget else { return isGuidedFollowUp ? .done : nil }
+        if isGuidedFollowUp { return .continueGuiding }
+
+        let normalizedPrompt = prompt.lowercased()
+        let walkthroughPhrases = [
+            "how do i",
+            "how can i",
+            "show me how",
+            "walk me through",
+            "guide me",
+            "teach me",
+            "help me set up"
+        ]
+        return walkthroughPhrases.contains(where: normalizedPrompt.contains)
+            ? .continueGuiding
+            : nil
     }
 
     func clearScreenAnnotations() {

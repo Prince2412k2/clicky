@@ -6,6 +6,9 @@ on:
     branches:
       - feature/openclicky
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-15
@@ -43,6 +46,7 @@ jobs:
             -scheme leanring-buddy \
             -configuration Release \
             -derivedDataPath "$RUNNER_TEMP/OpenClickyPackageData" \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
             CODE_SIGNING_ALLOWED=NO \
             build
 
@@ -72,12 +76,32 @@ jobs:
             --sequesterRsrc \
             --keepParent \
             "$RUNNER_TEMP/OpenClickyPackageData/Build/Products/Release/OpenClicky.app" \
-            "$RUNNER_TEMP/OpenClicky-Test-Build.zip"
+            "$RUNNER_TEMP/OpenClicky-Alpha.zip"
+
+      - name: Create checksum
+        run: |
+          cd "$RUNNER_TEMP"
+          shasum -a 256 OpenClicky-Alpha.zip > OpenClicky-Alpha.zip.sha256
 
       - name: Upload application
         uses: actions/upload-artifact@v4
         with:
           name: OpenClicky-Test-Build
-          path: ${{ runner.temp }}/OpenClicky-Test-Build.zip
+          path: |
+            ${{ runner.temp }}/OpenClicky-Alpha.zip
+            ${{ runner.temp }}/OpenClicky-Alpha.zip.sha256
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish alpha release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "openclicky-alpha-$GITHUB_RUN_NUMBER" \
+            "$RUNNER_TEMP/OpenClicky-Alpha.zip" \
+            "$RUNNER_TEMP/OpenClicky-Alpha.zip.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "OpenClicky Alpha $GITHUB_RUN_NUMBER" \
+            --notes "Automated OpenClicky alpha build from $GITHUB_SHA." \
+            --prerelease

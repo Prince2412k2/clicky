@@ -24,6 +24,10 @@ final class LocalKokoroTTSClient: NSObject, AVAudioPlayerDelegate {
         audioPlayer?.isPlaying == true
     }
 
+    func prepareModel() async throws {
+        try await prepareIfNeeded()
+    }
+
     func speakText(_ text: String) async throws {
         stopPlayback()
         try await prepareIfNeeded()
@@ -53,7 +57,12 @@ final class LocalKokoroTTSClient: NSObject, AVAudioPlayerDelegate {
         stopPlayback()
         initializationTask?.cancel()
         initializationTask = nil
-        Task { await manager.cleanup() }
+        Task {
+            await manager.cleanup()
+            await MainActor.run {
+                LocalSpeechModelState.shared.markVoiceUnloaded()
+            }
+        }
     }
 
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
@@ -69,14 +78,19 @@ final class LocalKokoroTTSClient: NSObject, AVAudioPlayerDelegate {
         }
 
         let initializationTask = Task { [manager] in
+            await MainActor.run {
+                LocalSpeechModelState.shared.markVoicePreparing()
+            }
             try await manager.initialize(preloadVoices: Set(["af_heart"]))
         }
         self.initializationTask = initializationTask
         do {
             try await initializationTask.value
             self.initializationTask = nil
+            LocalSpeechModelState.shared.voice = .ready
         } catch {
             self.initializationTask = nil
+            LocalSpeechModelState.shared.voice = .failed(error.localizedDescription)
             throw error
         }
     }

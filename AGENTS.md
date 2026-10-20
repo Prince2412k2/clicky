@@ -36,6 +36,8 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 
 **Local speech models**: FluidAudio is pinned to `0.17.7`. Parakeet EOU uses 320 ms chunks and Kokoro uses v3 on macOS 15+ with the legacy runtime on macOS 14. Models download on first use, stay outside the app bundle, remain warm between interactions, and unload when the master switch turns off or the app exits.
 
+**Alpha updates**: GitHub Actions publishes versioned prereleases with `CFBundleVersion` set from the run number. `OpenClickyUpdater` discovers newer prereleases, validates the downloaded bundle, and installs to `/Applications/OpenClicky.app`. Stable TCC permission continuity requires every release to use the same Apple Developer ID signing identity; ad-hoc CI signing is only for prototypes.
+
 **Visual prompt launcher**: Control+Command freezes the current display under a borderless full-screen layer. A Spotlight-style field receives focus immediately; pen, arrow, rectangle, ellipse, eraser, and undo controls annotate the capture without showing a conventional screenshot window.
 
 **Bounded guidance**: Guided walkthroughs ignore clicks in OpenClicky's own windows and stop after fifteen steps unless ended earlier. Synthetic clicks require explicit approval; walkthrough-wide approval is reset when the walkthrough stops.
@@ -62,6 +64,8 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 | `SystemTTSClient.swift` | ~30 | Local speech output through macOS AVSpeechSynthesizer. |
 | `LocalParakeetTranscriptionProvider.swift` | ~190 | Lazy, shared Parakeet EOU streaming transcription provider with ordered audio processing. |
 | `LocalKokoroTTSClient.swift` | ~80 | Lazy Kokoro CoreML initialization, local synthesis, playback, and model cleanup. |
+| `LocalSpeechModelState.swift` | ~90 | Shared download, compilation, ready, unloaded, and failure state for local speech models. |
+| `OpenClickyUpdater.swift` | ~250 | GitHub prerelease discovery, download validation, `/Applications` installation, and relaunch. |
 | `BuddyDictationManager.swift` | ~866 | Push-to-talk voice pipeline. Handles microphone capture via `AVAudioEngine`, provider-aware permission checks, keyboard/button dictation sessions, transcript finalization, shortcut parsing, contextual keyterms, and live audio-level reporting for waveform feedback. |
 | `BuddyTranscriptionProvider.swift` | ~90 | Protocol and runtime-selectable Apple Speech/OpenAI transcription factory. |
 | `OpenAIAudioTranscriptionProvider.swift` | ~317 | Upload-based transcription provider. Buffers push-to-talk audio locally, uploads as WAV on release, returns finalized transcript. |

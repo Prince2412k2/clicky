@@ -43,6 +43,10 @@ Only ChatGPT offers an official third-party subscription-sharing flow in this pr
 
 Local speech models download on first use into Application Support, are verified and cached by FluidAudio, and are not bundled into the app. Turning OpenClicky off unloads the local speech models from memory. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for licenses and attribution.
 
+The menu shows download, compilation, ready, and failure states for both local models. Alpha builds can check GitHub Releases, download an update, validate its bundle identity and signature, and replace the installation in `/Applications`.
+
+For reliable macOS permission continuity across updates, release builds ultimately need to be signed with the same Apple Developer ID certificate. Installing at a stable `/Applications/OpenClicky.app` path helps, but ad-hoc development signatures cannot guarantee that TCC will preserve permissions.
+
 ## Build
 
 Requirements:

@@ -60,11 +60,18 @@ private actor LocalParakeetModelPool {
         }
 
         let preparationTask = Task {
+            await MainActor.run {
+                LocalSpeechModelState.shared.markTranscriptionPreparing()
+            }
             let manager = StreamingEouAsrManager(
                 chunkSize: .ms320,
                 eouDebounceMs: 900
             )
-            try await manager.loadModels()
+            try await manager.loadModels { progress in
+                Task { @MainActor in
+                    LocalSpeechModelState.shared.markTranscriptionDownloading(progress)
+                }
+            }
             return manager
         }
         self.preparationTask = preparationTask
@@ -72,9 +79,15 @@ private actor LocalParakeetModelPool {
             let manager = try await preparationTask.value
             self.preparationTask = nil
             self.manager = manager
+            await MainActor.run {
+                LocalSpeechModelState.shared.transcription = .ready
+            }
             return manager
         } catch {
             self.preparationTask = nil
+            await MainActor.run {
+                LocalSpeechModelState.shared.transcription = .failed(error.localizedDescription)
+            }
             throw LocalParakeetTranscriptionError(
                 message: "The local transcription model could not be prepared: \(error.localizedDescription)"
             )
@@ -86,6 +99,9 @@ private actor LocalParakeetModelPool {
         preparationTask?.cancel()
         preparationTask = nil
         manager = nil
+        await MainActor.run {
+            LocalSpeechModelState.shared.markTranscriptionUnloaded()
+        }
     }
 }
 
