@@ -48,10 +48,17 @@ enum OpenClickyAIProvider: String, CaseIterable, Identifiable {
 
 enum OpenClickySpeechOutput: String, CaseIterable, Identifiable {
     case macVoice
+    case localKokoro
     case textOnly
 
     var id: String { rawValue }
-    var displayName: String { self == .macVoice ? "Mac Voice" : "Text Only" }
+    var displayName: String {
+        switch self {
+        case .macVoice: return "Mac Voice"
+        case .localKokoro: return "Kokoro Local"
+        case .textOnly: return "Text Only"
+        }
+    }
 }
 
 enum OpenClickyCredentialStore {

@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		FA1000032F70000300ABCDEF /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = FA1000022F70000200ABCDEF /* FluidAudio */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		28F22CCD2F56440300A0FC59 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -52,6 +56,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FA1000032F70000300ABCDEF /* FluidAudio in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +117,7 @@
 			);
 			name = "leanring-buddy";
 			packageProductDependencies = (
+				FA1000022F70000200ABCDEF /* FluidAudio */,
 			);
 			productName = "leanring-buddy";
 			productReference = 28F22CBF2F56440300A0FC59 /* OpenClicky.app */;
@@ -196,6 +202,7 @@
 			mainGroup = 28F22CB62F56440300A0FC59;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				FA1000012F70000100ABCDEF /* XCRemoteSwiftPackageReference "FluidAudio" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 28F22CC02F56440300A0FC59 /* Products */;
@@ -579,6 +586,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		FA1000012F70000100ABCDEF /* XCRemoteSwiftPackageReference "FluidAudio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/FluidInference/FluidAudio.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.17.7;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		FA1000022F70000200ABCDEF /* FluidAudio */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FA1000012F70000100ABCDEF /* XCRemoteSwiftPackageReference "FluidAudio" */;
+			productName = FluidAudio;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 28F22CB72F56440300A0FC59 /* Project object */;
 }

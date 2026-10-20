@@ -146,6 +146,14 @@ struct CompanionPanelView: View {
                 selection: companionManager.buddyDictationManager.transcriptionProviderDisplayName
             ) {
                 Button {
+                    companionManager.buddyDictationManager.setTranscriptionProvider(.localParakeet)
+                } label: {
+                    menuSelectionLabel(
+                        "Parakeet Local",
+                        isSelected: companionManager.buddyDictationManager.selectedTranscriptionProvider == .localParakeet
+                    )
+                }
+                Button {
                     companionManager.buddyDictationManager.setTranscriptionProvider(.appleSpeech)
                 } label: {
                     menuSelectionLabel(

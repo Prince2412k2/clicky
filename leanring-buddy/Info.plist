@@ -5,7 +5,7 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>VoiceTranscriptionProvider</key>
-	<string>apple</string>
+	<string>parakeet</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>OpenClicky uses your microphone only while you hold the voice shortcut.</string>
 	<key>NSScreenCaptureUsageDescription</key>

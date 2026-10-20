@@ -13,8 +13,8 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
 - **AI Chat**: ChatGPT Plan, OpenAI API, Anthropic API, Gemini API, or local Ollama
-- **Speech-to-Text**: Apple Speech by default; OpenAI API transcription is optional
-- **Text-to-Speech**: macOS voice or text only
+- **Speech-to-Text**: FluidAudio Parakeet EOU 120M is the local default; Apple Speech and OpenAI API transcription are optional fallbacks
+- **Text-to-Speech**: FluidAudio Kokoro-82M CoreML is the local default; macOS voice and text-only output are fallbacks
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+); prompts capture only the display containing the pointer
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: The selected model embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
@@ -33,6 +33,8 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 **Global Push-To-Talk Shortcut**: Background push-to-talk uses a listen-only `CGEvent` tap instead of an AppKit global monitor so modifier-based shortcuts like `ctrl + option` are detected more reliably while the app is running in the background.
 
 **Provider credentials**: API keys and ChatGPT OAuth credentials are stored in Keychain. ChatGPT uses OpenAI's official dynamic-registration flow and public Responses API. Other providers use documented API-key endpoints; Ollama stays on loopback.
+
+**Local speech models**: FluidAudio is pinned to `0.17.7`. Parakeet EOU uses 320 ms chunks and Kokoro uses v3 on macOS 15+ with the legacy runtime on macOS 14. Models download on first use, stay outside the app bundle, remain warm between interactions, and unload when the master switch turns off or the app exits.
 
 **Visual prompt launcher**: Control+Command freezes the current display under a borderless full-screen layer. A Spotlight-style field receives focus immediately; pen, arrow, rectangle, ellipse, eraser, and undo controls annotate the capture without showing a conventional screenshot window.
 
@@ -58,6 +60,8 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 | `OpenAIResponsesAPI.swift` | ~180 | ChatGPT-plan model discovery and streaming public Responses API client. |
 | `OpenClickyServices.swift` | ~430 | Provider definitions, secure API-key storage, model discovery, and direct OpenAI/Anthropic/Gemini/Ollama clients. |
 | `SystemTTSClient.swift` | ~30 | Local speech output through macOS AVSpeechSynthesizer. |
+| `LocalParakeetTranscriptionProvider.swift` | ~190 | Lazy, shared Parakeet EOU streaming transcription provider with ordered audio processing. |
+| `LocalKokoroTTSClient.swift` | ~80 | Lazy Kokoro CoreML initialization, local synthesis, playback, and model cleanup. |
 | `BuddyDictationManager.swift` | ~866 | Push-to-talk voice pipeline. Handles microphone capture via `AVAudioEngine`, provider-aware permission checks, keyboard/button dictation sessions, transcript finalization, shortcut parsing, contextual keyterms, and live audio-level reporting for waveform feedback. |
 | `BuddyTranscriptionProvider.swift` | ~90 | Protocol and runtime-selectable Apple Speech/OpenAI transcription factory. |
 | `OpenAIAudioTranscriptionProvider.swift` | ~317 | Upload-based transcription provider. Buffers push-to-talk audio locally, uploads as WAV on release, returns finalized transcript. |

@@ -66,6 +66,7 @@ final class CompanionManager: ObservableObject {
     )
     private let directAIClient = OpenClickyDirectAIClient()
     private let systemTTSClient = SystemTTSClient()
+    private let localKokoroTTSClient = LocalKokoroTTSClient()
 
     /// Conversation history so the selected model remembers prior exchanges within a session.
     private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
@@ -108,7 +109,7 @@ final class CompanionManager: ObservableObject {
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedAIModel") ?? "gpt-5.2"
     @Published var speechOutput = OpenClickySpeechOutput(
         rawValue: UserDefaults.standard.string(forKey: "speechOutput") ?? ""
-    ) ?? .macVoice
+    ) ?? .localKokoro
     @Published private(set) var discoveredModels: [OpenAIModelOption] = []
     @Published private(set) var providerErrorMessage: String?
     private var discoveredModelsProvider: OpenClickyAIProvider?
@@ -142,11 +143,10 @@ final class CompanionManager: ObservableObject {
     }
 
     func setSpeechOutput(_ output: OpenClickySpeechOutput) {
+        systemTTSClient.stopPlayback()
+        localKokoroTTSClient.stopPlayback()
         speechOutput = output
         UserDefaults.standard.set(output.rawValue, forKey: "speechOutput")
-        if output == .textOnly {
-            systemTTSClient.stopPlayback()
-        }
     }
 
     func hasAPIKey(for provider: OpenClickyAIProvider) -> Bool {
@@ -223,6 +223,8 @@ final class CompanionManager: ObservableObject {
             currentResponseTask?.cancel()
             currentResponseTask = nil
             systemTTSClient.stopPlayback()
+            localKokoroTTSClient.stopPlayback()
+            LocalParakeetTranscriptionProvider.unloadModels()
             clearScreenAnnotations()
             displayedResponseText = ""
             stopGuidedSession()
@@ -262,6 +264,9 @@ final class CompanionManager: ObservableObject {
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
+        systemTTSClient.stopPlayback()
+        localKokoroTTSClient.unloadModels()
+        LocalParakeetTranscriptionProvider.unloadModels()
         annotationClearTask?.cancel()
 
         currentResponseTask?.cancel()
@@ -501,6 +506,7 @@ final class CompanionManager: ObservableObject {
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
             systemTTSClient.stopPlayback()
+            localKokoroTTSClient.stopPlayback()
             clearDetectedElementLocation()
 
             pendingKeyboardShortcutStartTask?.cancel()
@@ -591,6 +597,7 @@ final class CompanionManager: ObservableObject {
         }
         currentResponseTask?.cancel()
         systemTTSClient.stopPlayback()
+        localKokoroTTSClient.stopPlayback()
         clearScreenAnnotations()
 
         currentResponseTask = Task {
@@ -622,7 +629,7 @@ final class CompanionManager: ObservableObject {
                 }
 
                 let fullResponseText: String
-                let outputGuidance = speechOutput == .macVoice
+                let outputGuidance = speechOutput != .textOnly
                     ? "The response will be spoken aloud. Use short, natural sentences and avoid markdown or code dumps."
                     : "The response will be read on screen. Use clear formatting when it improves readability."
                 let systemPrompt = Self.companionResponseSystemPrompt + "\n\n" + outputGuidance
@@ -733,9 +740,21 @@ final class CompanionManager: ObservableObject {
 
 
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    if speechOutput == .macVoice {
+                    switch speechOutput {
+                    case .macVoice:
                         systemTTSClient.speakText(spokenText)
                         voiceState = .responding
+                    case .localKokoro:
+                        do {
+                            try await localKokoroTTSClient.speakText(spokenText)
+                            voiceState = .responding
+                        } catch {
+                            providerErrorMessage = "Local voice unavailable; using Mac Voice. \(error.localizedDescription)"
+                            systemTTSClient.speakText(spokenText)
+                            voiceState = .responding
+                        }
+                    case .textOnly:
+                        break
                     }
                 }
             } catch is CancellationError {
@@ -753,7 +772,7 @@ final class CompanionManager: ObservableObject {
     private func showResponseError(_ details: String) {
         providerErrorMessage = details
         displayedResponseText = "OpenClicky could not complete that request. Check your provider settings and try again."
-        if speechOutput == .macVoice {
+        if speechOutput != .textOnly {
             systemTTSClient.speakText(displayedResponseText)
             voiceState = .responding
         }

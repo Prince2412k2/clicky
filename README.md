@@ -38,8 +38,10 @@ Only ChatGPT offers an official third-party subscription-sharing flow in this pr
 
 ## Speech
 
-- Transcription: Apple Speech by default, with OpenAI API transcription as an option
-- Output: macOS voice or text only
+- Transcription: Parakeet EOU 120M runs locally by default; Apple Speech and OpenAI API transcription remain available
+- Output: Kokoro-82M CoreML runs locally by default; macOS voice and text-only output remain available
+
+Local speech models download on first use into Application Support, are verified and cached by FluidAudio, and are not bundled into the app. Turning OpenClicky off unloads the local speech models from memory. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for licenses and attribution.
 
 ## Build
 

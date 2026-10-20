@@ -30,6 +30,7 @@ protocol BuddyTranscriptionProvider {
 }
 
 enum VoiceTranscriptionProvider: String, CaseIterable, Identifiable {
+    case localParakeet = "parakeet"
     case appleSpeech = "apple"
     case openAI = "openai"
 
@@ -37,6 +38,7 @@ enum VoiceTranscriptionProvider: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
+        case .localParakeet: return "Parakeet Local"
         case .appleSpeech: return "Apple Speech"
         case .openAI: return "OpenAI API"
         }
@@ -51,7 +53,7 @@ enum BuddyTranscriptionProviderFactory {
             ?? AppBundleConfiguration.stringValue(forKey: "VoiceTranscriptionProvider")
         let requestedProvider = configuredProviderRawValue
             .flatMap { VoiceTranscriptionProvider(rawValue: $0.lowercased()) }
-            ?? .appleSpeech
+            ?? .localParakeet
         let resolvedProvider = resolveProvider(requestedProvider)
         let provider = makeProvider(resolvedProvider)
         return (resolvedProvider, provider)
@@ -59,6 +61,8 @@ enum BuddyTranscriptionProviderFactory {
 
     static func makeProvider(_ provider: VoiceTranscriptionProvider) -> any BuddyTranscriptionProvider {
         switch provider {
+        case .localParakeet:
+            return LocalParakeetTranscriptionProvider()
         case .appleSpeech:
             return AppleSpeechTranscriptionProvider()
         case .openAI:
@@ -74,6 +78,8 @@ enum BuddyTranscriptionProviderFactory {
         _ preferredProvider: VoiceTranscriptionProvider
     ) -> VoiceTranscriptionProvider {
         switch preferredProvider {
+        case .localParakeet:
+            return .localParakeet
         case .appleSpeech:
             return .appleSpeech
         case .openAI:
