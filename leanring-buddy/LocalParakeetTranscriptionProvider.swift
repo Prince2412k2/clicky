@@ -69,7 +69,14 @@ private actor LocalParakeetModelPool {
             )
             try await manager.loadModels { progress in
                 Task { @MainActor in
-                    LocalSpeechModelState.shared.markTranscriptionDownloading(progress)
+                    switch progress.phase {
+                    case .compiling:
+                        LocalSpeechModelState.shared.transcription = .preparing
+                    case .listing, .downloading:
+                        LocalSpeechModelState.shared.markTranscriptionDownloading(
+                            progress.fractionCompleted
+                        )
+                    }
                 }
             }
             return manager
