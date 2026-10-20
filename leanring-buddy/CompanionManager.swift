@@ -241,6 +241,10 @@ final class CompanionManager: ObservableObject {
         bindShortcutTransitions()
         bindScreenshotShortcut()
         bindGuidedSessionEvents()
+        Task {
+            try? await Task.sleep(for: .seconds(1))
+            await buddyDictationManager.prepareSelectedTranscriptionProvider()
+        }
         if selectedAIProvider == .ollama
             || (selectedAIProvider == .chatGPT && chatGPTAuthenticationManager.isSignedIn)
             || (selectedAIProvider.requiresAPIKey && hasAPIKey(for: selectedAIProvider)) {

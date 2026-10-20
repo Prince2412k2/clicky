@@ -21,12 +21,18 @@ protocol BuddyTranscriptionProvider {
     var isConfigured: Bool { get }
     var unavailableExplanation: String? { get }
 
+    func prepare() async throws
+
     func startStreamingSession(
         keyterms: [String],
         onTranscriptUpdate: @escaping (String) -> Void,
         onFinalTranscriptReady: @escaping (String) -> Void,
         onError: @escaping (Error) -> Void
     ) async throws -> any BuddyStreamingTranscriptionSession
+}
+
+extension BuddyTranscriptionProvider {
+    func prepare() async throws {}
 }
 
 enum VoiceTranscriptionProvider: String, CaseIterable, Identifiable {

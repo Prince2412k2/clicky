@@ -234,6 +234,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     @Published private(set) var microphoneButtonRecordingStartedAt: Date?
     @Published private(set) var transcriptionProviderDisplayName = ""
     @Published private(set) var selectedTranscriptionProvider: VoiceTranscriptionProvider
+    @Published private(set) var isPreparingTranscriptionProvider = false
     @Published var lastErrorMessage: String?
     @Published private(set) var currentPermissionProblem: BuddyDictationPermissionProblem?
 
@@ -301,6 +302,22 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         self.transcriptionProviderDisplayName = transcriptionProvider.displayName
         BuddyTranscriptionProviderFactory.saveSelectedProvider(selectedTranscriptionProvider)
         lastErrorMessage = nil
+        Task { await prepareSelectedTranscriptionProvider() }
+    }
+
+    func prepareSelectedTranscriptionProvider() async {
+        guard !isPreparingTranscriptionProvider else { return }
+        isPreparingTranscriptionProvider = true
+        defer { isPreparingTranscriptionProvider = false }
+        do {
+            try await transcriptionProvider.prepare()
+            lastErrorMessage = nil
+        } catch {
+            lastErrorMessage = userFacingErrorMessage(
+                from: error,
+                fallback: "couldn't prepare local transcription. try again."
+            )
+        }
     }
 
     func updateContextualKeyterms(_ contextualKeyterms: [String]) {

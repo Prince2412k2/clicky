@@ -143,7 +143,9 @@ struct CompanionPanelView: View {
             menuRow(
                 title: "Transcription",
                 iconName: "mic",
-                selection: companionManager.buddyDictationManager.transcriptionProviderDisplayName
+                selection: companionManager.buddyDictationManager.isPreparingTranscriptionProvider
+                    ? "Preparing…"
+                    : companionManager.buddyDictationManager.transcriptionProviderDisplayName
             ) {
                 Button {
                     companionManager.buddyDictationManager.setTranscriptionProvider(.localParakeet)

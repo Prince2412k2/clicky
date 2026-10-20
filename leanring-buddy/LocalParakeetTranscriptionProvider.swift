@@ -17,6 +17,10 @@ final class LocalParakeetTranscriptionProvider: BuddyTranscriptionProvider {
         Task { await LocalParakeetModelPool.shared.cleanup() }
     }
 
+    func prepare() async throws {
+        _ = try await LocalParakeetModelPool.shared.managerForNewSession()
+    }
+
     func startStreamingSession(
         keyterms: [String],
         onTranscriptUpdate: @escaping (String) -> Void,
@@ -43,6 +47,7 @@ private actor LocalParakeetModelPool {
     static let shared = LocalParakeetModelPool()
 
     private var manager: StreamingEouAsrManager?
+    private var preparationTask: Task<StreamingEouAsrManager, Error>?
 
     func managerForNewSession() async throws -> StreamingEouAsrManager {
         if let manager {
@@ -50,23 +55,36 @@ private actor LocalParakeetModelPool {
             return manager
         }
 
-        let manager = StreamingEouAsrManager(
-            chunkSize: .ms320,
-            eouDebounceMs: 900
-        )
-        do {
+        if let preparationTask {
+            return try await preparationTask.value
+        }
+
+        let preparationTask = Task {
+            let manager = StreamingEouAsrManager(
+                chunkSize: .ms320,
+                eouDebounceMs: 900
+            )
             try await manager.loadModels()
+            return manager
+        }
+        self.preparationTask = preparationTask
+        do {
+            let manager = try await preparationTask.value
+            self.preparationTask = nil
+            self.manager = manager
+            return manager
         } catch {
+            self.preparationTask = nil
             throw LocalParakeetTranscriptionError(
                 message: "The local transcription model could not be prepared: \(error.localizedDescription)"
             )
         }
-        self.manager = manager
-        return manager
     }
 
     func cleanup() async {
         await manager?.cleanup()
+        preparationTask?.cancel()
+        preparationTask = nil
         manager = nil
     }
 }
