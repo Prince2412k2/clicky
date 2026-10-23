@@ -44,6 +44,8 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 
 **Computer-use safety**: Only pointer clicks are implemented. The selected model is instructed never to request clicks for purchases, deletion, authentication, permissions, financial actions, or sending messages. Approval remains the enforcement boundary; typing and keyboard actions are intentionally unsupported.
 
+**Semantic automation migration**: PeekabooAutomationKit is pinned to `4.9.6` and linked in-process so automation uses OpenClicky's TCC identity. CI selects Xcode 26.3 for Swift 6.2 package compatibility while retaining the macOS 14.2 deployment target. Do not invoke Peekaboo, axcli, cliclick, Node MCP servers, or Hammerspoon as helper processes.
+
 ## Key Files
 
 | File | Lines | Purpose |

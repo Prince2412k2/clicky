@@ -24,3 +24,11 @@ OpenClicky can download and run optional speech models locally. The model files 
 - Purpose: On-device text-to-speech synthesis.
 
 The complete license texts and additional transitive notices are available in the linked upstream repositories and in FluidAudio's `LICENSE` and `ThirdPartyLicenses` directories.
+
+## Peekaboo and AXorcist
+
+- Peekaboo: https://github.com/openclaw/Peekaboo
+- AXorcist: https://github.com/openclaw/AXorcist
+- License: MIT
+- Copyright: Peter Steinberger and contributors
+- Purpose: In-process semantic macOS Accessibility inspection and automation. OpenClicky links only the reusable automation library and does not embed Peekaboo's agent runtime, model providers, MCP server, CLI, or user interface.

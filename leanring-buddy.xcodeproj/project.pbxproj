@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		FA1000032F70000300ABCDEF /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = FA1000022F70000200ABCDEF /* FluidAudio */; };
+		PB1000032F71000300ABCDEF /* PeekabooAutomationKit in Frameworks */ = {isa = PBXBuildFile; productRef = PB1000022F71000200ABCDEF /* PeekabooAutomationKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -57,6 +58,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				FA1000032F70000300ABCDEF /* FluidAudio in Frameworks */,
+				PB1000032F71000300ABCDEF /* PeekabooAutomationKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -118,6 +120,7 @@
 			name = "leanring-buddy";
 			packageProductDependencies = (
 				FA1000022F70000200ABCDEF /* FluidAudio */,
+				PB1000022F71000200ABCDEF /* PeekabooAutomationKit */,
 			);
 			productName = "leanring-buddy";
 			productReference = 28F22CBF2F56440300A0FC59 /* OpenClicky.app */;
@@ -203,6 +206,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				FA1000012F70000100ABCDEF /* XCRemoteSwiftPackageReference "FluidAudio" */,
+				PB1000012F71000100ABCDEF /* XCRemoteSwiftPackageReference "Peekaboo" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 28F22CC02F56440300A0FC59 /* Products */;
@@ -596,6 +600,14 @@
 				version = 0.17.7;
 			};
 		};
+		PB1000012F71000100ABCDEF /* XCRemoteSwiftPackageReference "Peekaboo" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/openclaw/Peekaboo.git";
+			requirement = {
+				kind = exactVersion;
+				version = 4.9.6;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -603,6 +615,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = FA1000012F70000100ABCDEF /* XCRemoteSwiftPackageReference "FluidAudio" */;
 			productName = FluidAudio;
+		};
+		PB1000022F71000200ABCDEF /* PeekabooAutomationKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = PB1000012F71000100ABCDEF /* XCRemoteSwiftPackageReference "Peekaboo" */;
+			productName = PeekabooAutomationKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
