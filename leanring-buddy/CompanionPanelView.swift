@@ -761,6 +761,15 @@ struct CompanionPanelView: View {
         }
     }
 
+    private var statusColor: Color {
+        guard companionManager.isOpenClickyEnabled else { return .secondary }
+        guard companionManager.visualPromptPermissionsGranted else { return .orange }
+        switch companionManager.voiceState {
+        case .idle: return .green
+        case .listening, .processing, .responding: return .accentColor
+        }
+    }
+
     private func requestMicrophonePermission() {
         let authorizationStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         if authorizationStatus == .notDetermined {
