@@ -34,7 +34,7 @@ final class MenuBarPanelManager: NSObject {
     private var showPanelObserver: NSObjectProtocol?
 
     private let companionManager: CompanionManager
-    private let panelWidth: CGFloat = 310
+    private let panelWidth: CGFloat = 406
     private let panelHeight: CGFloat = 320
 
     init(companionManager: CompanionManager) {
@@ -202,7 +202,17 @@ final class MenuBarPanelManager: NSObject {
         let actualPanelHeight = fittingSize.height
 
         // Horizontally center the panel beneath the status item icon
-        let panelOriginX = statusItemFrame.midX - (panelWidth / 2)
+        let preferredPanelOriginX = statusItemFrame.midX - (panelWidth / 2)
+        let visibleFrame = buttonWindow.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+        let panelOriginX: CGFloat
+        if let visibleFrame {
+            panelOriginX = min(
+                max(preferredPanelOriginX, visibleFrame.minX + 8),
+                visibleFrame.maxX - panelWidth - 8
+            )
+        } else {
+            panelOriginX = preferredPanelOriginX
+        }
         let panelOriginY = statusItemFrame.minY - actualPanelHeight - gapBelowMenuBar
 
         panel.setFrame(

@@ -8,6 +8,10 @@ struct CompanionPanelView: View {
     @ObservedObject private var updater: OpenClickyUpdater
     @State private var apiKeyInput = ""
     @State private var apiKeySaveMessage: String?
+    @State private var isModelPickerPresented = false
+    @State private var modelSearchText = ""
+
+    private let panelWidth: CGFloat = 406
 
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
@@ -30,7 +34,7 @@ struct CompanionPanelView: View {
             Divider()
             actionsSection
         }
-        .frame(width: 310)
+        .frame(width: panelWidth)
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         .onAppear {
@@ -56,22 +60,27 @@ struct CompanionPanelView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 11) {
+        HStack(spacing: 14) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(Color.accentColor.gradient)
-                    .frame(width: 34, height: 34)
+                    .frame(width: 46, height: 46)
                 Image(systemName: "cursorarrow.rays")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(.white)
             }
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text("OpenClicky")
-                    .font(.system(size: 14, weight: .semibold))
-                Text(statusText)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 18, weight: .semibold))
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(statusColor)
+                        .frame(width: 9, height: 9)
+                    Text(statusText)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Spacer()
@@ -85,13 +94,13 @@ struct CompanionPanelView: View {
             )
             .labelsHidden()
             .toggleStyle(.switch)
-            .controlSize(.small)
+            .controlSize(.regular)
             .tint(.accentColor)
             .help(companionManager.isOpenClickyEnabled ? "Stop OpenClicky" : "Start OpenClicky")
             .pointerCursor()
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
     }
 
     private var settingsSection: some View {
@@ -115,22 +124,7 @@ struct CompanionPanelView: View {
                 }
             }
 
-            menuRow(
-                title: "Model",
-                iconName: "cpu",
-                selection: companionManager.selectedModel
-            ) {
-                ForEach(companionManager.availableModelNames, id: \.self) { modelName in
-                    Button {
-                        companionManager.setSelectedModel(modelName)
-                    } label: {
-                        menuSelectionLabel(
-                            modelName,
-                            isSelected: companionManager.selectedModel == modelName
-                        )
-                    }
-                }
-            }
+            modelPickerRow
 
             menuRow(
                 title: "Voice",
@@ -181,6 +175,9 @@ struct CompanionPanelView: View {
                     )
                 }
             }
+
+            Divider()
+                .padding(.vertical, 5)
 
             accountSection
             localModelsSection
@@ -238,6 +235,7 @@ struct CompanionPanelView: View {
                     .frame(height: 42)
                 }
                 .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity)
                 .pointerCursor()
@@ -326,30 +324,128 @@ struct CompanionPanelView: View {
     ) -> some View {
         HStack(spacing: 10) {
             Image(systemName: iconName)
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: 17, weight: .medium))
                 .foregroundStyle(.secondary)
                 .frame(width: 22)
             Text(title)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 14, weight: .medium))
             Spacer(minLength: 8)
             Menu(content: menuContent) {
                 HStack(spacing: 5) {
                     Text(selection)
-                        .font(.system(size: 11))
+                        .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Image(systemName: "chevron.up.chevron.down")
+                    Image(systemName: "chevron.right")
                         .font(.system(size: 8, weight: .semibold))
                         .foregroundStyle(.tertiary)
                 }
             }
             .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
             .fixedSize()
             .pointerCursor()
         }
-        .padding(.horizontal, 12)
-        .frame(width: 310, height: 36)
+        .padding(.horizontal, 20)
+        .frame(width: panelWidth, height: 42)
+    }
+
+    private var modelPickerRow: some View {
+        Button {
+            isModelPickerPresented.toggle()
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "cpu")
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24)
+                Text("Model")
+                    .font(.system(size: 14, weight: .medium))
+                Spacer()
+                Text(companionManager.selectedModel)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, 20)
+            .frame(width: panelWidth - 20, height: 42)
+            .background(
+                isModelPickerPresented ? Color.accentColor.opacity(0.1) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
+        .frame(width: panelWidth, height: 42)
+        .pointerCursor()
+        .popover(isPresented: $isModelPickerPresented, arrowEdge: .trailing) {
+            modelPickerPopover
+        }
+    }
+
+    private var modelPickerPopover: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search models…", text: $modelSearchText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 38)
+            .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 9))
+
+            ScrollView {
+                LazyVStack(spacing: 3) {
+                    ForEach(filteredModelNames, id: \.self) { modelName in
+                        Button {
+                            companionManager.setSelectedModel(modelName)
+                            isModelPickerPresented = false
+                            modelSearchText = ""
+                        } label: {
+                            HStack(spacing: 9) {
+                                Image(systemName: "sparkles")
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 20)
+                                Text(modelName)
+                                    .font(.system(size: 13, weight: .medium))
+                                Spacer()
+                                if modelName == companionManager.selectedModel {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 11, weight: .semibold))
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .frame(height: 36)
+                            .background(
+                                modelName == companionManager.selectedModel
+                                    ? Color.accentColor.opacity(0.75)
+                                    : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 8)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .pointerCursor()
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .frame(width: 270, height: 340)
+    }
+
+    private var filteredModelNames: [String] {
+        let query = modelSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return companionManager.availableModelNames }
+        return companionManager.availableModelNames.filter {
+            $0.localizedCaseInsensitiveContains(query)
+        }
     }
 
     private func valueRow(title: String, iconName: String, value: String) -> some View {
@@ -397,7 +493,7 @@ struct CompanionPanelView: View {
         VStack(spacing: 0) {
             modelStatusRow(
                 title: "Parakeet",
-                iconName: "waveform.badge.mic",
+                iconName: "bird.fill",
                 state: localModelState.transcription,
                 prepareAction: companionManager.prepareLocalTranscriptionModel
             )
@@ -426,6 +522,9 @@ struct CompanionPanelView: View {
                 HStack(spacing: 6) {
                     Text(title)
                         .font(.system(size: 11, weight: .medium))
+                    Circle()
+                        .fill(modelStatusColor(state))
+                        .frame(width: 7, height: 7)
                     Text(state.displayText)
                         .font(.system(size: 9))
                         .foregroundStyle(modelStatusColor(state))
@@ -445,10 +544,7 @@ struct CompanionPanelView: View {
                 .foregroundStyle(.tint)
                 .help("Download model")
                 .pointerCursor()
-            } else if state == .ready || state == .downloaded {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-            } else {
+            } else if state != .ready && state != .downloaded {
                 ProgressView()
                     .controlSize(.small)
             }
@@ -543,7 +639,7 @@ struct CompanionPanelView: View {
             Button {
                 companionManager.clearConversation()
             } label: {
-                actionRow(title: "Clear Conversation", iconName: "trash")
+                actionRow(title: "Clear Conversation", iconName: "trash", showsChevron: true)
             }
             .buttonStyle(.plain)
             .pointerCursor()
@@ -551,7 +647,7 @@ struct CompanionPanelView: View {
             Button {
                 NSApp.terminate(nil)
             } label: {
-                actionRow(title: "Quit OpenClicky", iconName: "power")
+                actionRow(title: "Quit OpenClicky", iconName: "power", iconColor: .red)
             }
             .buttonStyle(.plain)
             .pointerCursor()
@@ -565,7 +661,7 @@ struct CompanionPanelView: View {
             Button {
                 updater.installCurrentApplication()
             } label: {
-                actionRow(title: "Install in Applications", iconName: "square.and.arrow.down")
+                actionRow(title: "Install in Applications", iconName: "square.and.arrow.down", showsChevron: true)
             }
             .buttonStyle(.plain)
             .pointerCursor()
@@ -575,7 +671,7 @@ struct CompanionPanelView: View {
                 Button {
                     updater.installAvailableUpdate()
                 } label: {
-                    actionRow(title: "Install Update \(build)", iconName: "arrow.down.circle.fill")
+                    actionRow(title: "Install Update \(build)", iconName: "arrow.down.circle.fill", showsChevron: true)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.tint)
@@ -590,7 +686,7 @@ struct CompanionPanelView: View {
                 Button {
                     updater.checkForUpdates()
                 } label: {
-                    actionRow(title: "Update Failed — Retry", iconName: "exclamationmark.arrow.triangle.2.circlepath")
+                    actionRow(title: "Update Failed — Retry", iconName: "exclamationmark.arrow.triangle.2.circlepath", showsChevron: true)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.red)
@@ -599,7 +695,7 @@ struct CompanionPanelView: View {
                 Button {
                     updater.checkForUpdates()
                 } label: {
-                    actionRow(title: "Check for Updates", iconName: "arrow.triangle.2.circlepath")
+                    actionRow(title: "Check for Updates", iconName: "arrow.triangle.2.circlepath", showsChevron: true)
                 }
                 .buttonStyle(.plain)
                 .pointerCursor()
@@ -620,14 +716,24 @@ struct CompanionPanelView: View {
         .frame(height: 32)
     }
 
-    private func actionRow(title: String, iconName: String) -> some View {
+    private func actionRow(
+        title: String,
+        iconName: String,
+        iconColor: Color = .secondary,
+        showsChevron: Bool = false
+    ) -> some View {
         HStack(spacing: 10) {
             Image(systemName: iconName)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(iconColor)
                 .frame(width: 22)
             Text(title)
                 .font(.system(size: 11, weight: .medium))
             Spacer()
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
         }
         .contentShape(Rectangle())
         .padding(.horizontal, 12)
