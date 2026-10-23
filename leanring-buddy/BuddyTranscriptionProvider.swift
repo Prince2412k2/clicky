@@ -21,6 +21,8 @@ protocol BuddyTranscriptionProvider {
     var isConfigured: Bool { get }
     var unavailableExplanation: String? { get }
 
+    func prepare() async throws
+
     func startStreamingSession(
         keyterms: [String],
         onTranscriptUpdate: @escaping (String) -> Void,
@@ -29,72 +31,69 @@ protocol BuddyTranscriptionProvider {
     ) async throws -> any BuddyStreamingTranscriptionSession
 }
 
+extension BuddyTranscriptionProvider {
+    func prepare() async throws {}
+}
+
+enum VoiceTranscriptionProvider: String, CaseIterable, Identifiable {
+    case localParakeet = "parakeet"
+    case appleSpeech = "apple"
+    case openAI = "openai"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .localParakeet: return "Parakeet Local"
+        case .appleSpeech: return "Apple Speech"
+        case .openAI: return "OpenAI API"
+        }
+    }
+}
+
 enum BuddyTranscriptionProviderFactory {
-    private enum PreferredProvider: String {
-        case assemblyAI = "assemblyai"
-        case openAI = "openai"
-        case appleSpeech = "apple"
+    private static let selectedProviderDefaultsKey = "selectedTranscriptionProvider"
+
+    static func makeDefaultProvider() -> (VoiceTranscriptionProvider, any BuddyTranscriptionProvider) {
+        let configuredProviderRawValue = UserDefaults.standard.string(forKey: selectedProviderDefaultsKey)
+            ?? AppBundleConfiguration.stringValue(forKey: "VoiceTranscriptionProvider")
+        let requestedProvider = configuredProviderRawValue
+            .flatMap { VoiceTranscriptionProvider(rawValue: $0.lowercased()) }
+            ?? .localParakeet
+        let resolvedProvider = resolveProvider(requestedProvider)
+        let provider = makeProvider(resolvedProvider)
+        return (resolvedProvider, provider)
     }
 
-    static func makeDefaultProvider() -> any BuddyTranscriptionProvider {
-        let provider = resolveProvider()
-        print("🎙️ Transcription: using \(provider.displayName)")
-        return provider
+    static func makeProvider(_ provider: VoiceTranscriptionProvider) -> any BuddyTranscriptionProvider {
+        switch provider {
+        case .localParakeet:
+            return LocalParakeetTranscriptionProvider()
+        case .appleSpeech:
+            return AppleSpeechTranscriptionProvider()
+        case .openAI:
+            return OpenAIAudioTranscriptionProvider()
+        }
     }
 
-    private static func resolveProvider() -> any BuddyTranscriptionProvider {
-        let preferredProviderRawValue = AppBundleConfiguration
-            .stringValue(forKey: "VoiceTranscriptionProvider")?
-            .lowercased()
-        let preferredProvider = preferredProviderRawValue.flatMap(PreferredProvider.init(rawValue:))
+    static func saveSelectedProvider(_ provider: VoiceTranscriptionProvider) {
+        UserDefaults.standard.set(provider.rawValue, forKey: selectedProviderDefaultsKey)
+    }
 
-        let assemblyAIProvider = AssemblyAIStreamingTranscriptionProvider()
-        let openAIProvider = OpenAIAudioTranscriptionProvider()
-
-        if preferredProvider == .appleSpeech {
-            return AppleSpeechTranscriptionProvider()
-        }
-
-        if preferredProvider == .assemblyAI {
-            if assemblyAIProvider.isConfigured {
-                return assemblyAIProvider
-            }
-
-            print("⚠️ Transcription: AssemblyAI preferred but not configured, falling back")
-
+    private static func resolveProvider(
+        _ preferredProvider: VoiceTranscriptionProvider
+    ) -> VoiceTranscriptionProvider {
+        switch preferredProvider {
+        case .localParakeet:
+            return .localParakeet
+        case .appleSpeech:
+            return .appleSpeech
+        case .openAI:
+            let openAIProvider = OpenAIAudioTranscriptionProvider()
             if openAIProvider.isConfigured {
-                print("⚠️ Transcription: using OpenAI as fallback")
-                return openAIProvider
+                return .openAI
             }
-
-            print("⚠️ Transcription: using Apple Speech as fallback")
-            return AppleSpeechTranscriptionProvider()
+            return .appleSpeech
         }
-
-        if preferredProvider == .openAI {
-            if openAIProvider.isConfigured {
-                return openAIProvider
-            }
-
-            print("⚠️ Transcription: OpenAI preferred but not configured, falling back")
-
-            if assemblyAIProvider.isConfigured {
-                print("⚠️ Transcription: using AssemblyAI as fallback")
-                return assemblyAIProvider
-            }
-
-            print("⚠️ Transcription: using Apple Speech as fallback")
-            return AppleSpeechTranscriptionProvider()
-        }
-
-        if assemblyAIProvider.isConfigured {
-            return assemblyAIProvider
-        }
-
-        if openAIProvider.isConfigured {
-            return openAIProvider
-        }
-
-        return AppleSpeechTranscriptionProvider()
     }
 }

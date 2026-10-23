@@ -1,0 +1,109 @@
+name: Build OpenClicky
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/openclicky
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build OpenClicky
+        run: |
+          xcodebuild \
+            -project leanring-buddy.xcodeproj \
+            -scheme leanring-buddy \
+            -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/OpenClickyDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Run unit tests
+        run: |
+          xcodebuild \
+            -project leanring-buddy.xcodeproj \
+            -scheme leanring-buddy \
+            -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/OpenClickyDerivedData" \
+            -only-testing:leanring-buddyTests \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+
+      - name: Build clean distributable app
+        run: |
+          xcodebuild \
+            -project leanring-buddy.xcodeproj \
+            -scheme leanring-buddy \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/OpenClickyPackageData" \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Ad-hoc sign application
+        run: |
+          codesign \
+            --force \
+            --deep \
+            --sign - \
+            --entitlements leanring-buddy/leanring-buddy.entitlements \
+            "$RUNNER_TEMP/OpenClickyPackageData/Build/Products/Release/OpenClicky.app"
+
+      - name: Verify application bundle
+        run: |
+          APP_PATH="$RUNNER_TEMP/OpenClickyPackageData/Build/Products/Release/OpenClicky.app"
+          codesign --verify --deep --strict "$APP_PATH"
+          if find "$APP_PATH" -iname '*XCTest*' -o -iname '*PostHog*' -o -iname '*Sparkle*' | grep -q .; then
+            echo "Unexpected test or removed third-party framework found in app bundle"
+            exit 1
+          fi
+
+      - name: Package application
+        run: |
+          ditto \
+            -c \
+            -k \
+            --sequesterRsrc \
+            --keepParent \
+            "$RUNNER_TEMP/OpenClickyPackageData/Build/Products/Release/OpenClicky.app" \
+            "$RUNNER_TEMP/OpenClicky-Alpha.zip"
+
+      - name: Create checksum
+        run: |
+          cd "$RUNNER_TEMP"
+          shasum -a 256 OpenClicky-Alpha.zip > OpenClicky-Alpha.zip.sha256
+
+      - name: Upload application
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenClicky-Test-Build
+          path: |
+            ${{ runner.temp }}/OpenClicky-Alpha.zip
+            ${{ runner.temp }}/OpenClicky-Alpha.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish alpha release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "openclicky-alpha-$GITHUB_RUN_NUMBER" \
+            "$RUNNER_TEMP/OpenClicky-Alpha.zip" \
+            "$RUNNER_TEMP/OpenClicky-Alpha.zip.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "OpenClicky Alpha $GITHUB_RUN_NUMBER" \
+            --notes "Automated OpenClicky alpha build from $GITHUB_SHA." \
+            --prerelease
