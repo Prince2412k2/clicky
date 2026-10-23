@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import PeekabooAutomationKit
+import PeekabooFoundation
 
 struct OpenClickySemanticSnapshot {
     let snapshotID: String
