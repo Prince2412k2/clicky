@@ -131,4 +131,10 @@ struct leanring_buddyTests {
         #expect(!result.responseText.contains("[ACTION:"))
     }
 
+    @Test func infersExplicitComputerActionMode() {
+        #expect(CompanionManager.inferInteractionMode(from: "Do this for me") == .act)
+        #expect(CompanionManager.inferInteractionMode(from: "Walk me through Blender") == .guide)
+        #expect(CompanionManager.inferInteractionMode(from: "What is this?") == .ask)
+    }
+
 }

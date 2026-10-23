@@ -1,5 +1,14 @@
 import Foundation
 
+enum OpenClickyInteractionMode: String, CaseIterable, Identifiable {
+    case ask
+    case guide
+    case act
+
+    var id: String { rawValue }
+    var displayName: String { rawValue.capitalized }
+}
+
 enum GuidedSessionDirective: String, Equatable {
     case continueGuiding = "continue"
     case done

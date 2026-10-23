@@ -39,9 +39,9 @@ private struct ScreenshotAnnotation: Identifiable {
 final class ScreenshotPromptWindowManager {
     private var window: NSPanel?
     private var previouslyActiveApplication: NSRunningApplication?
-    private let onSubmit: (String, CompanionScreenCapture) -> Void
+    private let onSubmit: (String, CompanionScreenCapture, OpenClickyInteractionMode) -> Void
 
-    init(onSubmit: @escaping (String, CompanionScreenCapture) -> Void) {
+    init(onSubmit: @escaping (String, CompanionScreenCapture, OpenClickyInteractionMode) -> Void) {
         self.onSubmit = onSubmit
     }
 
@@ -64,7 +64,7 @@ final class ScreenshotPromptWindowManager {
             providerName: providerName,
             modelName: modelName,
             onCancel: { [weak self] in self?.close() },
-            onSubmit: { [weak self] prompt, annotations in
+            onSubmit: { [weak self] prompt, annotations, interactionMode in
                 guard let self else { return }
                 let annotatedCapture = self.captureByApplyingAnnotations(
                     annotations,
@@ -72,7 +72,7 @@ final class ScreenshotPromptWindowManager {
                     screenshotImage: screenshotImage
                 )
                 self.close()
-                self.onSubmit(prompt, annotatedCapture)
+                self.onSubmit(prompt, annotatedCapture, interactionMode)
             }
         )
 
@@ -231,12 +231,13 @@ private struct ScreenshotPromptView: View {
     let providerName: String
     let modelName: String
     let onCancel: () -> Void
-    let onSubmit: (String, [ScreenshotAnnotation]) -> Void
+    let onSubmit: (String, [ScreenshotAnnotation], OpenClickyInteractionMode) -> Void
 
     @State private var prompt = ""
     @State private var selectedTool: ScreenshotAnnotationTool?
     @State private var annotations: [ScreenshotAnnotation] = []
     @State private var activeAnnotation: ScreenshotAnnotation?
+    @State private var interactionMode: OpenClickyInteractionMode = .ask
     @FocusState private var isPromptFocused: Bool
 
     var body: some View {
@@ -280,6 +281,15 @@ private struct ScreenshotPromptView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
+
+                Picker("Mode", selection: $interactionMode) {
+                    ForEach(OpenClickyInteractionMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 150)
 
                 Button(action: submit) {
                     Image(systemName: "arrow.up")
@@ -504,6 +514,6 @@ private struct ScreenshotPromptView: View {
         let submittedPrompt = trimmedPrompt.isEmpty
             ? "Explain what I marked and guide me through it."
             : trimmedPrompt
-        onSubmit(submittedPrompt, annotations)
+        onSubmit(submittedPrompt, annotations, interactionMode)
     }
 }

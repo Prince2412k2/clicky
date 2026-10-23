@@ -49,10 +49,11 @@ final class CompanionManager: ObservableObject {
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
     private lazy var screenshotPromptWindowManager = ScreenshotPromptWindowManager(
-        onSubmit: { [weak self] prompt, screenCapture in
+        onSubmit: { [weak self] prompt, screenCapture, interactionMode in
             self?.sendPromptWithScreenshot(
                 transcript: prompt,
-                suppliedScreenCaptures: [screenCapture]
+                suppliedScreenCaptures: [screenCapture],
+                interactionMode: interactionMode
             )
         }
     )
@@ -490,7 +491,8 @@ final class CompanionManager: ObservableObject {
                 sendPromptWithScreenshot(
                     transcript: followUpPrompt,
                     suppliedScreenCaptures: [screenCapture],
-                    isGuidedFollowUp: true
+                    isGuidedFollowUp: true,
+                    interactionMode: allowsClicksForGuidedSession ? .act : .guide
                 )
             } catch {
                 interactionErrorMessage = "Could not continue the walkthrough: \(error.localizedDescription)"
@@ -548,7 +550,10 @@ final class CompanionManager: ObservableObject {
                         // Partial transcripts are hidden (waveform-only UI)
                     },
                     submitDraftText: { [weak self] finalTranscript in
-                        self?.sendPromptWithScreenshot(transcript: finalTranscript)
+                        self?.sendPromptWithScreenshot(
+                            transcript: finalTranscript,
+                            interactionMode: Self.inferInteractionMode(from: finalTranscript)
+                        )
                     }
                 )
             }
@@ -621,7 +626,8 @@ final class CompanionManager: ObservableObject {
     private func sendPromptWithScreenshot(
         transcript: String,
         suppliedScreenCaptures: [CompanionScreenCapture]? = nil,
-        isGuidedFollowUp: Bool = false
+        isGuidedFollowUp: Bool = false,
+        interactionMode: OpenClickyInteractionMode = .ask
     ) {
         if !isGuidedFollowUp {
             stopGuidedSession(clearAnnotations: false)
@@ -665,7 +671,18 @@ final class CompanionManager: ObservableObject {
                 let outputGuidance = speechOutput != .textOnly
                     ? "The response will be spoken aloud. Use short, natural sentences and avoid markdown or code dumps."
                     : "The response will be read on screen. Use clear formatting when it improves readability."
-                let systemPrompt = Self.companionResponseSystemPrompt + "\n\n" + outputGuidance
+                let modeGuidance: String
+                switch interactionMode {
+                case .ask:
+                    modeGuidance = "ASK MODE: Answer the request. Do not request computer actions."
+                case .guide:
+                    modeGuidance = "GUIDE MODE: Give exactly one visible next step, draw its target, and continue the walkthrough until complete."
+                case .act:
+                    modeGuidance = "ACT MODE: The user explicitly asked you to operate the Mac. If a safe visible click advances the task, you MUST request it with ACTION:click instead of merely describing it. Request one action per turn and continue until complete."
+                }
+                let systemPrompt = Self.companionResponseSystemPrompt
+                    + "\n\n" + outputGuidance
+                    + "\n\n" + modeGuidance
                 if selectedAIProvider == .chatGPT {
                     let response = try await openAIResponsesAPI.analyzeImageStreaming(
                         images: labeledImages,
@@ -740,6 +757,7 @@ final class CompanionManager: ObservableObject {
                         explicitDirective: guidedParseResult.directive,
                         prompt: transcript,
                         isGuidedFollowUp: isGuidedFollowUp,
+                        interactionMode: interactionMode,
                         hasVisualTarget: !screenAnnotations.isEmpty
                             || parseResult.coordinate != nil
                             || computerActionParseResult.clickAction != nil
@@ -842,11 +860,13 @@ final class CompanionManager: ObservableObject {
         explicitDirective: GuidedSessionDirective?,
         prompt: String,
         isGuidedFollowUp: Bool,
+        interactionMode: OpenClickyInteractionMode,
         hasVisualTarget: Bool
     ) -> GuidedSessionDirective? {
         if let explicitDirective { return explicitDirective }
         guard hasVisualTarget else { return isGuidedFollowUp ? .done : nil }
         if isGuidedFollowUp { return .continueGuiding }
+        if interactionMode == .guide || interactionMode == .act { return .continueGuiding }
 
         let normalizedPrompt = prompt.lowercased()
         let walkthroughPhrases = [
@@ -861,6 +881,20 @@ final class CompanionManager: ObservableObject {
         return walkthroughPhrases.contains(where: normalizedPrompt.contains)
             ? .continueGuiding
             : nil
+    }
+
+    static func inferInteractionMode(from prompt: String) -> OpenClickyInteractionMode {
+        let normalizedPrompt = prompt.lowercased()
+        let actionPhrases = [
+            "do it for me", "do this for me", "take over", "click it", "open it for me",
+            "perform the steps", "handle this", "act on it"
+        ]
+        if actionPhrases.contains(where: normalizedPrompt.contains) { return .act }
+        let guidePhrases = [
+            "how do i", "how can i", "show me how", "walk me through", "guide me", "teach me"
+        ]
+        if guidePhrases.contains(where: normalizedPrompt.contains) { return .guide }
+        return .ask
     }
 
     func clearScreenAnnotations() {
