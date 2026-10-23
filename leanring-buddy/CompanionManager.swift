@@ -58,6 +58,7 @@ final class CompanionManager: ObservableObject {
         }
     )
     private let computerActionApprovalWindowManager = ComputerActionApprovalWindowManager()
+    private let semanticAutomationService = SemanticAutomationService()
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
@@ -90,6 +91,7 @@ final class CompanionManager: ObservableObject {
     private var guidedSessionGoal = ""
     private var guidedStepCount = 0
     private var allowsClicksForGuidedSession = false
+    private var guidedSemanticFingerprint: Set<String>?
 
     /// True when all three required permissions (accessibility, screen recording,
     /// microphone) are granted. Used by the panel to show a single "all good" state.
@@ -452,7 +454,7 @@ final class CompanionManager: ObservableObject {
 
     private func bindGuidedSessionEvents() {
         observedClickCancellable = globalPushToTalkShortcutMonitor
-            .observedClickPublisher
+            .observedInteractionPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] clickLocation in
                 self?.handleObservedClickDuringGuidedSession(clickLocation)
@@ -469,19 +471,22 @@ final class CompanionManager: ObservableObject {
         guard isOpenClickyEnabled,
               isGuidedSessionActive,
               isWaitingForGuidedAction,
-              voiceState == .idle else { return }
+              !buddyDictationManager.isDictationInProgress,
+              !NSApp.isActive else { return }
         guard !NSApp.windows.contains(where: { window in
             window.isVisible && window.frame.contains(clickLocation)
         }) else { return }
 
-        isWaitingForGuidedAction = false
         displayedResponseText = ""
         responseClearTask?.cancel()
-        clearScreenAnnotations()
         guidedAdvanceTask?.cancel()
         guidedAdvanceTask = Task {
-            try? await Task.sleep(for: .milliseconds(900))
+            try? await Task.sleep(for: .milliseconds(1200))
             guard !Task.isCancelled else { return }
+            isWaitingForGuidedAction = false
+            systemTTSClient.stopPlayback()
+            localKokoroTTSClient.stopPlayback()
+            clearScreenAnnotations()
             do {
                 let screenCapture = try await CompanionScreenCaptureUtility.captureScreenContainingPointerAsJPEG()
                 let followUpPrompt = """
@@ -609,7 +614,7 @@ final class CompanionManager: ObservableObject {
     when the user asks how to complete a task in the visible app, act as a live guide. give exactly one actionable step at a time, draw the target, and append [GUIDE:continue]. after the user acts, you will receive a new screenshot and must inspect what actually changed before giving the next step. never repeat a completed step. when the goal is visibly complete, append [GUIDE:done]. for ordinary questions that do not need a walkthrough, do not add a GUIDE tag.
 
     approved computer actions:
-    only when the user explicitly asks you to click, act, perform the steps, or do the task for them, you may request one click with [ACTION:click:x,y:short description]. the user must approve it in OpenClicky before anything happens. request only one click per response and combine it with [GUIDE:continue] when more steps remain. never request a click for purchases, account deletion, permission dialogs, passwords, authentication, financial actions, sending messages, or any other consequential action. for those, guide the user and let them click.
+    only when the user explicitly asks you to click, act, perform the steps, or do the task for them, you may request one click. prefer a semantic element from the Accessibility snapshot with [ACTION:element:elementID:short description]. only when no matching semantic element exists, use [ACTION:click:x,y:short description]. the user must approve it in OpenClicky before anything happens. request only one click per response and combine it with [GUIDE:continue] when more steps remain. never request a click for purchases, account deletion, permission dialogs, passwords, authentication, financial actions, sending messages, or any other consequential action. for those, guide the user and let them click.
 
     examples:
     - user asks how to color grade in final cut: "you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector]"
@@ -654,6 +659,8 @@ final class CompanionManager: ObservableObject {
 
                 guard !Task.isCancelled else { return }
 
+                let semanticSnapshot = try? await semanticAutomationService.captureFrontmostSnapshot()
+
                 // Build image labels with the actual screenshot pixel dimensions
                 // so Claude's coordinate space matches the image it sees. We
                 // scale from screenshot pixels to display points ourselves.
@@ -683,13 +690,23 @@ final class CompanionManager: ObservableObject {
                 let systemPrompt = Self.companionResponseSystemPrompt
                     + "\n\n" + outputGuidance
                     + "\n\n" + modeGuidance
+                var effectiveUserPrompt = transcript
+                if let semanticSnapshot {
+                    effectiveUserPrompt += "\n\n" + semanticSnapshot.compactDescription
+                    if isGuidedFollowUp, let previousFingerprint = guidedSemanticFingerprint {
+                        let changed = semanticSnapshot.stateFingerprint != previousFingerprint
+                        effectiveUserPrompt += changed
+                            ? "\n\nThe accessible UI state changed after the previous step."
+                            : "\n\nThe accessible UI state did not change after the previous step. The user may have clicked the wrong target or the app may still be loading; inspect the screenshot and correct the guidance."
+                    }
+                }
                 if selectedAIProvider == .chatGPT {
                     let response = try await openAIResponsesAPI.analyzeImageStreaming(
                         images: labeledImages,
                         model: selectedModel,
                         systemPrompt: systemPrompt,
                         conversationHistory: historyForAPI,
-                        userPrompt: transcript,
+                        userPrompt: effectiveUserPrompt,
                         onTextChunk: { _ in }
                     )
                     fullResponseText = response.text
@@ -701,7 +718,7 @@ final class CompanionManager: ObservableObject {
                         images: labeledImages,
                         systemPrompt: systemPrompt,
                         conversationHistory: historyForAPI,
-                        userPrompt: transcript
+                        userPrompt: effectiveUserPrompt
                     )
                 }
 
@@ -769,8 +786,12 @@ final class CompanionManager: ObservableObject {
                    let targetScreenCapture {
                     requestComputerClickApproval(
                         clickAction,
-                        screenCapture: targetScreenCapture
+                        screenCapture: targetScreenCapture,
+                        semanticSnapshot: semanticSnapshot
                     )
+                }
+                if isGuidedSessionActive {
+                    guidedSemanticFingerprint = semanticSnapshot?.stateFingerprint
                 }
 
                 if let pointCoordinate = parseResult.coordinate,
@@ -910,6 +931,7 @@ final class CompanionManager: ObservableObject {
         isWaitingForGuidedAction = false
         guidedSessionGoal = ""
         guidedStepCount = 0
+        guidedSemanticFingerprint = nil
         allowsClicksForGuidedSession = false
         computerActionApprovalWindowManager.close()
         if clearAnnotations {
@@ -919,18 +941,31 @@ final class CompanionManager: ObservableObject {
 
     private func requestComputerClickApproval(
         _ clickAction: ParsedComputerClickAction,
-        screenCapture: CompanionScreenCapture
+        screenCapture: CompanionScreenCapture,
+        semanticSnapshot: OpenClickySemanticSnapshot?
     ) {
         guard hasAccessibilityPermission else {
             interactionErrorMessage = "Accessibility permission is required before OpenClicky can perform an approved click."
             NotificationCenter.default.post(name: .openClickyShowPanel, object: nil)
             return
         }
+        let semanticElement = clickAction.elementID.flatMap { semanticSnapshot?.elementsByID[$0] }
+        let fallbackScreenshotLocation = clickAction.screenshotLocation ?? CGPoint(
+            x: CGFloat(screenCapture.screenshotWidthInPixels) / 2,
+            y: CGFloat(screenCapture.screenshotHeightInPixels) / 2
+        )
         let pendingAction = PendingComputerClickAction(
-            appKitLocation: Self.convertScreenshotPointToGlobalAppKit(
-                clickAction.screenshotLocation,
+            appKitLocation: semanticElement.map { element in
+                CGPoint(
+                    x: element.bounds.midX,
+                    y: (NSScreen.screens.first?.frame.maxY ?? 0) - element.bounds.midY
+                )
+            } ?? Self.convertScreenshotPointToGlobalAppKit(
+                fallbackScreenshotLocation,
                 screenCapture: screenCapture
             ),
+            semanticElementID: semanticElement?.id,
+            semanticSnapshotID: semanticElement == nil ? nil : semanticSnapshot?.snapshotID,
             label: clickAction.label,
             targetApplication: NSWorkspace.shared.frontmostApplication
         )
@@ -963,7 +998,15 @@ final class CompanionManager: ObservableObject {
     private func performApprovedComputerClick(_ pendingAction: PendingComputerClickAction) {
         Task {
             do {
-                try await ComputerClickExecutor.perform(pendingAction)
+                if let elementID = pendingAction.semanticElementID,
+                   let snapshotID = pendingAction.semanticSnapshotID {
+                    try await semanticAutomationService.clickElement(
+                        elementID: elementID,
+                        snapshotID: snapshotID
+                    )
+                } else {
+                    try await ComputerClickExecutor.perform(pendingAction)
+                }
             } catch {
                 interactionErrorMessage = "Could not perform the approved click: \(error.localizedDescription)"
                 stopGuidedSession()

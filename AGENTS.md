@@ -40,9 +40,9 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 
 **Visual prompt launcher**: Control+Command freezes the current display under a borderless full-screen layer. A Spotlight-style field receives focus immediately; pen, arrow, rectangle, ellipse, eraser, and undo controls annotate the capture without showing a conventional screenshot window.
 
-**Bounded guidance**: Guided walkthroughs ignore clicks in OpenClicky's own windows and stop after fifteen steps unless ended earlier. Synthetic clicks require explicit approval; walkthrough-wide approval is reset when the walkthrough stops.
+**Bounded guidance**: Guided walkthroughs observe target-app clicks, keyboard input, and scrolling, debounce for 1.2 seconds of UI settling, compare fresh semantic fingerprints, and stop after fifteen steps unless ended earlier. Synthetic clicks require explicit approval; walkthrough-wide approval is reset when the walkthrough stops.
 
-**Computer-use safety**: Only pointer clicks are implemented. The selected model is instructed never to request clicks for purchases, deletion, authentication, permissions, financial actions, or sending messages. Approval remains the enforcement boundary; typing and keyboard actions are intentionally unsupported.
+**Computer-use safety**: Semantic element clicks are preferred and coordinate clicks are fallback-only. The selected model is instructed never to request clicks for purchases, deletion, authentication, permissions, financial actions, or sending messages. Approval remains the enforcement boundary; typing and keyboard actions are intentionally unsupported.
 
 **Semantic automation migration**: PeekabooAutomationKit is pinned to `4.9.6` and linked in-process so automation uses OpenClicky's TCC identity. CI selects Xcode 26.3 for Swift 6.2 package compatibility while retaining the macOS 14.2 deployment target. Do not invoke Peekaboo, axcli, cliclick, Node MCP servers, or Hammerspoon as helper processes.
 
@@ -60,6 +60,7 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 | `ScreenAnnotation.swift` | ~230 | Drawing-tag parser and click-through teaching overlay for arrows, boxes, highlights, pointers, and labels. |
 | `GuidedSession.swift` | ~35 | Parser for provider-independent guided-session continuation and completion tags. |
 | `ComputerAction.swift` | ~250 | Click-action parser, coordinate conversion, native approval card, and approved click executor. |
+| `SemanticAutomationService.swift` | ~100 | In-process Peekaboo semantic snapshots, compact element descriptions, state fingerprints, and exact element clicks. |
 | `ChatGPTAuthenticationManager.swift` | ~650 | ChatGPT OAuth registration, PKCE, ID-token verification, Keychain storage, refresh, recovery, and revocation. |
 | `OpenAIResponsesAPI.swift` | ~180 | ChatGPT-plan model discovery and streaming public Responses API client. |
 | `OpenClickyServices.swift` | ~430 | Provider definitions, secure API-key storage, model discovery, and direct OpenAI/Anthropic/Gemini/Ollama clients. |

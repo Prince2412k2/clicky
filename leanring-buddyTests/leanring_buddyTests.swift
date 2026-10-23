@@ -131,6 +131,16 @@ struct leanring_buddyTests {
         #expect(!result.responseText.contains("[ACTION:"))
     }
 
+    @Test func parsesSemanticElementAction() {
+        let result = ComputerActionParser.parse(
+            from: "Opening the shader editor. [ACTION:element:B14:shader editor] [GUIDE:continue]"
+        )
+
+        #expect(result.clickAction?.elementID == "B14")
+        #expect(result.clickAction?.screenshotLocation == nil)
+        #expect(result.clickAction?.label == "shader editor")
+    }
+
     @Test func infersExplicitComputerActionMode() {
         #expect(CompanionManager.inferInteractionMode(from: "Do this for me") == .act)
         #expect(CompanionManager.inferInteractionMode(from: "Walk me through Blender") == .guide)

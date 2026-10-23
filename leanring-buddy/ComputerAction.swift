@@ -3,7 +3,8 @@ import CoreGraphics
 import SwiftUI
 
 struct ParsedComputerClickAction: Equatable {
-    let screenshotLocation: CGPoint
+    let screenshotLocation: CGPoint?
+    let elementID: String?
     let label: String
 }
 
@@ -14,11 +15,29 @@ struct ComputerActionParseResult: Equatable {
 
 enum ComputerActionParser {
     static func parse(from responseText: String) -> ComputerActionParseResult {
+        let elementPattern = #"\[ACTION:element:([^:\]]+):([^\]]+)\]"#
+        let responseRange = NSRange(responseText.startIndex..., in: responseText)
+        if let elementExpression = try? NSRegularExpression(pattern: elementPattern),
+           let match = elementExpression.firstMatch(in: responseText, range: responseRange),
+           let elementRange = Range(match.range(at: 1), in: responseText),
+           let labelRange = Range(match.range(at: 2), in: responseText) {
+            let cleanedResponse = elementExpression
+                .stringByReplacingMatches(in: responseText, range: responseRange, withTemplate: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return ComputerActionParseResult(
+                responseText: cleanedResponse,
+                clickAction: ParsedComputerClickAction(
+                    screenshotLocation: nil,
+                    elementID: String(responseText[elementRange]),
+                    label: String(responseText[labelRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            )
+        }
+
         let pattern = #"\[ACTION:click:(\d+(?:\.\d+)?),(\d+(?:\.\d+)?):([^\]]+)\]"#
         guard let regularExpression = try? NSRegularExpression(pattern: pattern) else {
             return ComputerActionParseResult(responseText: responseText, clickAction: nil)
         }
-        let responseRange = NSRange(responseText.startIndex..., in: responseText)
         guard let match = regularExpression.firstMatch(in: responseText, range: responseRange),
               let xRange = Range(match.range(at: 1), in: responseText),
               let yRange = Range(match.range(at: 2), in: responseText),
@@ -38,6 +57,7 @@ enum ComputerActionParser {
             responseText: cleanedResponse,
             clickAction: ParsedComputerClickAction(
                 screenshotLocation: CGPoint(x: xCoordinate, y: yCoordinate),
+                elementID: nil,
                 label: String(responseText[labelRange]).trimmingCharacters(in: .whitespacesAndNewlines)
             )
         )
@@ -46,6 +66,8 @@ enum ComputerActionParser {
 
 struct PendingComputerClickAction {
     let appKitLocation: CGPoint
+    let semanticElementID: String?
+    let semanticSnapshotID: String?
     let label: String
     let targetApplication: NSRunningApplication?
 }
