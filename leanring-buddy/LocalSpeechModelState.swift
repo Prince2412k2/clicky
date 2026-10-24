@@ -61,20 +61,36 @@ final class LocalSpeechModelState: ObservableObject {
     }
 
     private static var parakeetModelExists: Bool {
-        modelDirectoryContainsFiles(relativePath: "FluidAudio/Models/parakeet-eou-streaming/320ms")
+        applicationSupportDirectoryContainsFiles(
+            relativePath: "FluidAudio/Models/parakeet-eou-streaming/parakeet-eou-streaming"
+        )
+            || applicationSupportDirectoryContainsFiles(
+                relativePath: "FluidAudio/Models/parakeet-eou-streaming/320ms"
+            )
     }
 
     private static var kokoroModelExists: Bool {
-        modelDirectoryContainsFiles(relativePath: "FluidAudio/Models/kokoro-82m-coreml")
-            || modelDirectoryContainsFiles(relativePath: "FluidAudio/Models/kokoro")
+        let fluidAudioCacheDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/fluidaudio/Models", isDirectory: true)
+        return directoryContainsFiles(
+            fluidAudioCacheDirectory.appendingPathComponent("kokoro-82m-coreml", isDirectory: true)
+        )
+            || directoryContainsFiles(
+                fluidAudioCacheDirectory.appendingPathComponent("kokoro", isDirectory: true)
+            )
     }
 
-    private static func modelDirectoryContainsFiles(relativePath: String) -> Bool {
+    private static func applicationSupportDirectoryContainsFiles(relativePath: String) -> Bool {
         guard let applicationSupportURL = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first else { return false }
-        let directoryURL = applicationSupportURL.appendingPathComponent(relativePath, isDirectory: true)
+        return directoryContainsFiles(
+            applicationSupportURL.appendingPathComponent(relativePath, isDirectory: true)
+        )
+    }
+
+    private static func directoryContainsFiles(_ directoryURL: URL) -> Bool {
         guard let contents = try? FileManager.default.contentsOfDirectory(
             at: directoryURL,
             includingPropertiesForKeys: nil

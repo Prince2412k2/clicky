@@ -34,7 +34,7 @@ final class MenuBarPanelManager: NSObject {
     private var showPanelObserver: NSObjectProtocol?
 
     private let companionManager: CompanionManager
-    private let panelWidth: CGFloat = 406
+    private let panelWidth: CGFloat = 310
     private let panelHeight: CGFloat = 320
 
     init(companionManager: CompanionManager) {

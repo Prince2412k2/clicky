@@ -481,6 +481,13 @@ final class CompanionManager: ObservableObject {
             window.isVisible && window.frame.contains(clickLocation)
         }) else { return }
 
+        scheduleGuidedSessionAdvanceAfterInteraction()
+    }
+
+    private func scheduleGuidedSessionAdvanceAfterInteraction() {
+        guard isOpenClickyEnabled,
+              isGuidedSessionActive,
+              isWaitingForGuidedAction else { return }
         displayedResponseText = ""
         responseClearTask?.cancel()
         guidedAdvanceTask?.cancel()
@@ -1002,6 +1009,7 @@ final class CompanionManager: ObservableObject {
                 } else {
                     try await ComputerClickExecutor.perform(pendingAction)
                 }
+                scheduleGuidedSessionAdvanceAfterInteraction()
             } catch {
                 interactionErrorMessage = "Could not perform the approved click: \(error.localizedDescription)"
                 stopGuidedSession()

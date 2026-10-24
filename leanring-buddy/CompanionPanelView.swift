@@ -11,7 +11,7 @@ struct CompanionPanelView: View {
     @State private var isModelPickerPresented = false
     @State private var modelSearchText = ""
 
-    private let panelWidth: CGFloat = 406
+    private let panelWidth: CGFloat = 310
 
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
@@ -60,25 +60,25 @@ struct CompanionPanelView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 11) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(Color.accentColor.gradient)
-                    .frame(width: 46, height: 46)
+                    .frame(width: 36, height: 36)
                 Image(systemName: "cursorarrow.rays")
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.white)
             }
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text("OpenClicky")
-                    .font(.system(size: 18, weight: .semibold))
-                HStack(spacing: 7) {
+                    .font(.system(size: 15, weight: .semibold))
+                HStack(spacing: 5) {
                     Circle()
                         .fill(statusColor)
-                        .frame(width: 9, height: 9)
+                        .frame(width: 7, height: 7)
                     Text(statusText)
-                        .font(.system(size: 13))
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -94,13 +94,13 @@ struct CompanionPanelView: View {
             )
             .labelsHidden()
             .toggleStyle(.switch)
-            .controlSize(.regular)
+            .controlSize(.small)
             .tint(.accentColor)
             .help(companionManager.isOpenClickyEnabled ? "Stop OpenClicky" : "Start OpenClicky")
             .pointerCursor()
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 16)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
     }
 
     private var settingsSection: some View {
@@ -180,7 +180,9 @@ struct CompanionPanelView: View {
                 .padding(.vertical, 5)
 
             accountSection
-            localModelsSection
+            if shouldShowAnyLocalModelState {
+                localModelsSection
+            }
 
             if let errorMessage = visibleErrorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
@@ -214,15 +216,15 @@ struct CompanionPanelView: View {
                 } label: {
                     HStack(spacing: 10) {
                         Image(systemName: "person.crop.circle.fill")
-                            .font(.system(size: 19))
+                            .font(.system(size: 16))
                             .foregroundStyle(.secondary)
                             .frame(width: 22)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(authenticationManager.accountEmail ?? "ChatGPT")
-                                .font(.system(size: 12, weight: .medium))
+                                .font(.system(size: 11, weight: .medium))
                                 .lineLimit(1)
                             Text("Connected")
-                                .font(.system(size: 10))
+                                .font(.system(size: 9))
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
@@ -231,8 +233,8 @@ struct CompanionPanelView: View {
                             .foregroundStyle(.tertiary)
                     }
                     .contentShape(Rectangle())
-                    .padding(.horizontal, 12)
-                    .frame(height: 42)
+                    .padding(.horizontal, 14)
+                    .frame(height: 36)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
@@ -324,16 +326,16 @@ struct CompanionPanelView: View {
     ) -> some View {
         HStack(spacing: 10) {
             Image(systemName: iconName)
-                .font(.system(size: 17, weight: .medium))
+                .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.secondary)
                 .frame(width: 22)
             Text(title)
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
             Spacer(minLength: 8)
             Menu(content: menuContent) {
                 HStack(spacing: 5) {
                     Text(selection)
-                        .font(.system(size: 13))
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -347,8 +349,8 @@ struct CompanionPanelView: View {
             .fixedSize()
             .pointerCursor()
         }
-        .padding(.horizontal, 20)
-        .frame(width: panelWidth, height: 42)
+        .padding(.horizontal, 14)
+        .frame(width: panelWidth, height: 36)
     }
 
     private var modelPickerRow: some View {
@@ -357,14 +359,14 @@ struct CompanionPanelView: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: "cpu")
-                    .font(.system(size: 17, weight: .medium))
+                    .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(.secondary)
                     .frame(width: 24)
                 Text("Model")
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
                 Spacer()
                 Text(companionManager.selectedModel)
-                    .font(.system(size: 13))
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -373,15 +375,15 @@ struct CompanionPanelView: View {
                     .foregroundStyle(.tertiary)
             }
             .contentShape(Rectangle())
-            .padding(.horizontal, 20)
-            .frame(width: panelWidth - 20, height: 42)
+            .padding(.horizontal, 14)
+            .frame(width: panelWidth - 12, height: 36)
             .background(
                 isModelPickerPresented ? Color.accentColor.opacity(0.1) : Color.clear,
                 in: RoundedRectangle(cornerRadius: 9, style: .continuous)
             )
         }
         .buttonStyle(.plain)
-        .frame(width: panelWidth, height: 42)
+        .frame(width: panelWidth, height: 36)
         .pointerCursor()
         .popover(isPresented: $isModelPickerPresented, arrowEdge: .trailing) {
             modelPickerPopover
@@ -491,20 +493,38 @@ struct CompanionPanelView: View {
 
     private var localModelsSection: some View {
         VStack(spacing: 0) {
-            modelStatusRow(
-                title: "Parakeet",
-                iconName: "bird.fill",
-                state: localModelState.transcription,
-                prepareAction: companionManager.prepareLocalTranscriptionModel
-            )
-            modelStatusRow(
-                title: "Kokoro",
-                iconName: "speaker.wave.2",
-                state: localModelState.voice,
-                prepareAction: companionManager.prepareLocalVoiceModel
-            )
+            if shouldShowLocalModelState(localModelState.transcription) {
+                modelStatusRow(
+                    title: "Parakeet",
+                    iconName: "bird.fill",
+                    state: localModelState.transcription,
+                    prepareAction: companionManager.prepareLocalTranscriptionModel
+                )
+            }
+            if shouldShowLocalModelState(localModelState.voice) {
+                modelStatusRow(
+                    title: "Kokoro",
+                    iconName: "speaker.wave.2",
+                    state: localModelState.voice,
+                    prepareAction: companionManager.prepareLocalVoiceModel
+                )
+            }
         }
         .padding(.vertical, 4)
+    }
+
+    private var shouldShowAnyLocalModelState: Bool {
+        shouldShowLocalModelState(localModelState.transcription)
+            || shouldShowLocalModelState(localModelState.voice)
+    }
+
+    private func shouldShowLocalModelState(_ state: LocalModelPreparationState) -> Bool {
+        switch state {
+        case .downloading, .installing, .preparing, .failed:
+            return true
+        case .notDownloaded, .downloaded, .ready:
+            return false
+        }
     }
 
     private func modelStatusRow(

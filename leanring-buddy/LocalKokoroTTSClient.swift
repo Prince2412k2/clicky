@@ -72,7 +72,10 @@ final class LocalKokoroTTSClient: NSObject, AVAudioPlayerDelegate {
     }
 
     private func prepareIfNeeded() async throws {
-        if await manager.isAvailable() { return }
+        if await manager.isAvailable() {
+            LocalSpeechModelState.shared.voice = .ready
+            return
+        }
         if let initializationTask {
             return try await initializationTask.value
         }
