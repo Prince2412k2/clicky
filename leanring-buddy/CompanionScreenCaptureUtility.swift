@@ -8,6 +8,7 @@
 //
 
 import AppKit
+import ImageIO
 import ScreenCaptureKit
 
 struct CompanionScreenCapture {
@@ -75,38 +76,33 @@ enum CompanionScreenCaptureUtility {
 
         let filter = SCContentFilter(display: display, excludingWindows: ownAppWindows)
 
-        let analysisConfiguration = SCStreamConfiguration()
         let maxDimension = 1280
-        let aspectRatio = CGFloat(display.width) / CGFloat(display.height)
-        if display.width >= display.height {
-            analysisConfiguration.width = maxDimension
-            analysisConfiguration.height = Int(CGFloat(maxDimension) / aspectRatio)
-        } else {
-            analysisConfiguration.height = maxDimension
-            analysisConfiguration.width = Int(CGFloat(maxDimension) * aspectRatio)
-        }
-
         let frozenDisplayConfiguration = SCStreamConfiguration()
         frozenDisplayConfiguration.width = display.width
         frozenDisplayConfiguration.height = display.height
 
         // Keep the frozen launcher lossless and Retina-sharp without sending
         // that much larger image to the selected model.
-        async let frozenDisplayImageTask = SCScreenshotManager.captureImage(
+        let frozenDisplayImage = try await SCScreenshotManager.captureImage(
             contentFilter: filter,
             configuration: frozenDisplayConfiguration
-        )
-        async let analysisImageTask = SCScreenshotManager.captureImage(
-            contentFilter: filter,
-            configuration: analysisConfiguration
-        )
-        let (frozenDisplayImage, analysisImage) = try await (
-            frozenDisplayImageTask,
-            analysisImageTask
         )
 
         guard let frozenDisplayImageData = NSBitmapImageRep(cgImage: frozenDisplayImage)
                 .representation(using: .png, properties: [:]),
+              let imageSource = CGImageSourceCreateWithData(
+                frozenDisplayImageData as CFData,
+                nil
+              ),
+              let analysisImage = CGImageSourceCreateThumbnailAtIndex(
+                imageSource,
+                0,
+                [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: maxDimension
+                ] as CFDictionary
+              ),
               let jpegData = NSBitmapImageRep(cgImage: analysisImage)
                 .representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
             throw NSError(domain: "CompanionScreenCapture", code: -2,
@@ -121,8 +117,8 @@ enum CompanionScreenCaptureUtility {
             displayWidthInPoints: Int(displayFrame.width),
             displayHeightInPoints: Int(displayFrame.height),
             displayFrame: displayFrame,
-            screenshotWidthInPixels: analysisConfiguration.width,
-            screenshotHeightInPixels: analysisConfiguration.height
+            screenshotWidthInPixels: analysisImage.width,
+            screenshotHeightInPixels: analysisImage.height
         )
     }
 }
