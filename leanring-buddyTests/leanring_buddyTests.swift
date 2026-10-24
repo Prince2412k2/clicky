@@ -85,6 +85,7 @@ struct leanring_buddyTests {
     @Test func convertsScreenshotPixelsIntoGlobalWindowCoordinates() {
         let screenCapture = CompanionScreenCapture(
             imageData: Data(),
+            frozenDisplayImageData: nil,
             label: "test window",
             isCursorScreen: true,
             displayWidthInPoints: 800,
@@ -139,12 +140,6 @@ struct leanring_buddyTests {
         #expect(result.clickAction?.elementID == "B14")
         #expect(result.clickAction?.screenshotLocation == nil)
         #expect(result.clickAction?.label == "shader editor")
-    }
-
-    @Test func infersExplicitComputerActionMode() {
-        #expect(CompanionManager.inferInteractionMode(from: "Do this for me") == .act)
-        #expect(CompanionManager.inferInteractionMode(from: "Walk me through Blender") == .guide)
-        #expect(CompanionManager.inferInteractionMode(from: "What is this?") == .ask)
     }
 
 }

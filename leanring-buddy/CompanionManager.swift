@@ -49,11 +49,11 @@ final class CompanionManager: ObservableObject {
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
     private lazy var screenshotPromptWindowManager = ScreenshotPromptWindowManager(
-        onSubmit: { [weak self] prompt, screenCapture, interactionMode in
+        onSubmit: { [weak self] prompt, screenCapture in
             self?.sendPromptWithScreenshot(
                 transcript: prompt,
                 suppliedScreenCaptures: [screenCapture],
-                interactionMode: interactionMode
+                interactionMode: .automatic
             )
         }
     )
@@ -85,6 +85,7 @@ final class CompanionManager: ObservableObject {
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
+    private var screenshotPromptPresentationTask: Task<Void, Never>?
     private var annotationClearTask: Task<Void, Never>?
     private var responseClearTask: Task<Void, Never>?
     private var guidedAdvanceTask: Task<Void, Never>?
@@ -463,6 +464,9 @@ final class CompanionManager: ObservableObject {
             .escapeKeyPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in
+                self?.screenshotPromptPresentationTask?.cancel()
+                self?.screenshotPromptPresentationTask = nil
+                self?.screenshotPromptWindowManager.close()
                 self?.stopGuidedSession()
             }
     }
@@ -516,15 +520,18 @@ final class CompanionManager: ObservableObject {
 
         interactionErrorMessage = nil
         NotificationCenter.default.post(name: .openClickyDismissPanel, object: nil)
-        Task {
+        screenshotPromptPresentationTask?.cancel()
+        screenshotPromptPresentationTask = Task {
             do {
                 let screenCapture = try await CompanionScreenCaptureUtility.captureScreenContainingPointerAsJPEG()
+                guard !Task.isCancelled else { return }
                 screenshotPromptWindowManager.show(
                     screenCapture: screenCapture,
                     providerName: selectedAIProvider.displayName,
                     modelName: selectedModel
                 )
             } catch {
+                guard !Task.isCancelled else { return }
                 let message = "Could not capture the current display: \(error.localizedDescription)"
                 interactionErrorMessage = message
                 displayedResponseText = message
@@ -557,7 +564,7 @@ final class CompanionManager: ObservableObject {
                     submitDraftText: { [weak self] finalTranscript in
                         self?.sendPromptWithScreenshot(
                             transcript: finalTranscript,
-                            interactionMode: Self.inferInteractionMode(from: finalTranscript)
+                            interactionMode: .automatic
                         )
                     }
                 )
@@ -632,7 +639,7 @@ final class CompanionManager: ObservableObject {
         transcript: String,
         suppliedScreenCaptures: [CompanionScreenCapture]? = nil,
         isGuidedFollowUp: Bool = false,
-        interactionMode: OpenClickyInteractionMode = .ask
+        interactionMode: OpenClickyInteractionMode = .automatic
     ) {
         if !isGuidedFollowUp {
             stopGuidedSession(clearAnnotations: false)
@@ -680,6 +687,8 @@ final class CompanionManager: ObservableObject {
                     : "The response will be read on screen. Use clear formatting when it improves readability."
                 let modeGuidance: String
                 switch interactionMode {
+                case .automatic:
+                    modeGuidance = "AUTOMATIC MODE: Infer the user's intent yourself. Answer ordinary questions directly. For how-to requests, give exactly one visible step and continue with GUIDE tags. Request a safe approved ACTION only when the user explicitly asks you to operate the Mac."
                 case .ask:
                     modeGuidance = "ASK MODE: Answer the request. Do not request computer actions."
                 case .guide:
@@ -902,20 +911,6 @@ final class CompanionManager: ObservableObject {
         return walkthroughPhrases.contains(where: normalizedPrompt.contains)
             ? .continueGuiding
             : nil
-    }
-
-    static func inferInteractionMode(from prompt: String) -> OpenClickyInteractionMode {
-        let normalizedPrompt = prompt.lowercased()
-        let actionPhrases = [
-            "do it for me", "do this for me", "take over", "click it", "open it for me",
-            "perform the steps", "handle this", "act on it"
-        ]
-        if actionPhrases.contains(where: normalizedPrompt.contains) { return .act }
-        let guidePhrases = [
-            "how do i", "how can i", "show me how", "walk me through", "guide me", "teach me"
-        ]
-        if guidePhrases.contains(where: normalizedPrompt.contains) { return .guide }
-        return .ask
     }
 
     func clearScreenAnnotations() {

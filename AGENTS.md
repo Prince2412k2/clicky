@@ -38,7 +38,7 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 
 **Alpha updates**: GitHub Actions publishes versioned prereleases with `CFBundleVersion` set from the run number. `OpenClickyUpdater` discovers newer prereleases, validates the downloaded bundle, and installs to `/Applications/OpenClicky.app`. Stable TCC permission continuity requires every release to use the same Apple Developer ID signing identity; ad-hoc CI signing is only for prototypes.
 
-**Visual prompt launcher**: Control+Command freezes the current display under a borderless full-screen layer. A Spotlight-style field receives focus immediately; pen, arrow, rectangle, ellipse, eraser, and undo controls annotate the capture without showing a conventional screenshot window.
+**Visual prompt launcher**: Control+Command freezes the current display at native resolution under a borderless full-screen layer while a smaller image is retained for model input. A Spotlight-style field receives focus immediately, the model infers whether to answer, guide, or request an approved action, and drawing controls stay collapsed until requested. Escape closes the complete launcher from any state.
 
 **Bounded guidance**: Guided walkthroughs observe target-app clicks, keyboard input, and scrolling, debounce for 1.2 seconds of UI settling, compare fresh semantic fingerprints, and stop after fifteen steps unless ended earlier. Synthetic clicks require explicit approval; walkthrough-wide approval is reset when the walkthrough stops.
 
@@ -56,7 +56,7 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 | `CompanionPanelView.swift` | ~350 | Compact native provider, model, voice, transcription, account, permission, and quit controls. |
 | `OverlayWindow.swift` | ~700 | Full-screen transparent cursor, response, waveform, spinner, and pointing overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~120 | Pointer-display capture using ScreenCaptureKit. |
-| `ScreenshotPromptWindow.swift` | ~500 | Full-display visual prompt launcher with focused input and Excalidraw-style annotation tools. |
+| `ScreenshotPromptWindow.swift` | ~650 | Native-resolution frozen-display launcher with focused input and collapsible annotation tools. |
 | `ScreenAnnotation.swift` | ~230 | Drawing-tag parser and click-through teaching overlay for arrows, boxes, highlights, pointers, and labels. |
 | `GuidedSession.swift` | ~35 | Parser for provider-independent guided-session continuation and completion tags. |
 | `ComputerAction.swift` | ~250 | Click-action parser, coordinate conversion, native approval card, and approved click executor. |

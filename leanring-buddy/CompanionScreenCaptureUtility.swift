@@ -12,6 +12,7 @@ import ScreenCaptureKit
 
 struct CompanionScreenCapture {
     let imageData: Data
+    let frozenDisplayImageData: Data?
     let label: String
     let isCursorScreen: Bool
     let displayWidthInPoints: Int
@@ -74,23 +75,39 @@ enum CompanionScreenCaptureUtility {
 
         let filter = SCContentFilter(display: display, excludingWindows: ownAppWindows)
 
-        let configuration = SCStreamConfiguration()
+        let analysisConfiguration = SCStreamConfiguration()
         let maxDimension = 1280
         let aspectRatio = CGFloat(display.width) / CGFloat(display.height)
         if display.width >= display.height {
-            configuration.width = maxDimension
-            configuration.height = Int(CGFloat(maxDimension) / aspectRatio)
+            analysisConfiguration.width = maxDimension
+            analysisConfiguration.height = Int(CGFloat(maxDimension) / aspectRatio)
         } else {
-            configuration.height = maxDimension
-            configuration.width = Int(CGFloat(maxDimension) * aspectRatio)
+            analysisConfiguration.height = maxDimension
+            analysisConfiguration.width = Int(CGFloat(maxDimension) * aspectRatio)
         }
 
-        let cgImage = try await SCScreenshotManager.captureImage(
+        let frozenDisplayConfiguration = SCStreamConfiguration()
+        frozenDisplayConfiguration.width = display.width
+        frozenDisplayConfiguration.height = display.height
+
+        // Keep the frozen launcher lossless and Retina-sharp without sending
+        // that much larger image to the selected model.
+        async let frozenDisplayImageTask = SCScreenshotManager.captureImage(
             contentFilter: filter,
-            configuration: configuration
+            configuration: frozenDisplayConfiguration
+        )
+        async let analysisImageTask = SCScreenshotManager.captureImage(
+            contentFilter: filter,
+            configuration: analysisConfiguration
+        )
+        let (frozenDisplayImage, analysisImage) = try await (
+            frozenDisplayImageTask,
+            analysisImageTask
         )
 
-        guard let jpegData = NSBitmapImageRep(cgImage: cgImage)
+        guard let frozenDisplayImageData = NSBitmapImageRep(cgImage: frozenDisplayImage)
+                .representation(using: .png, properties: [:]),
+              let jpegData = NSBitmapImageRep(cgImage: analysisImage)
                 .representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
             throw NSError(domain: "CompanionScreenCapture", code: -2,
                           userInfo: [NSLocalizedDescriptionKey: "Failed to encode the screen capture"])
@@ -98,13 +115,14 @@ enum CompanionScreenCaptureUtility {
 
         return CompanionScreenCapture(
             imageData: jpegData,
+            frozenDisplayImageData: frozenDisplayImageData,
             label: "screen containing the pointer",
             isCursorScreen: isCursorScreen,
             displayWidthInPoints: Int(displayFrame.width),
             displayHeightInPoints: Int(displayFrame.height),
             displayFrame: displayFrame,
-            screenshotWidthInPixels: configuration.width,
-            screenshotHeightInPixels: configuration.height
+            screenshotWidthInPixels: analysisConfiguration.width,
+            screenshotHeightInPixels: analysisConfiguration.height
         )
     }
 }

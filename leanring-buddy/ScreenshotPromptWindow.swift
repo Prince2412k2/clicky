@@ -3,6 +3,13 @@ import SwiftUI
 
 private final class ScreenshotPromptPanel: NSPanel {
     override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+
+    var cancelHandler: (() -> Void)?
+
+    override func cancelOperation(_ sender: Any?) {
+        cancelHandler?()
+    }
 }
 
 private enum ScreenshotAnnotationTool: String, CaseIterable, Identifiable {
@@ -39,9 +46,9 @@ private struct ScreenshotAnnotation: Identifiable {
 final class ScreenshotPromptWindowManager {
     private var window: NSPanel?
     private var previouslyActiveApplication: NSRunningApplication?
-    private let onSubmit: (String, CompanionScreenCapture, OpenClickyInteractionMode) -> Void
+    private let onSubmit: (String, CompanionScreenCapture) -> Void
 
-    init(onSubmit: @escaping (String, CompanionScreenCapture, OpenClickyInteractionMode) -> Void) {
+    init(onSubmit: @escaping (String, CompanionScreenCapture) -> Void) {
         self.onSubmit = onSubmit
     }
 
@@ -52,7 +59,9 @@ final class ScreenshotPromptWindowManager {
     ) {
         close(restorePreviousApplication: false)
 
-        guard let screenshotImage = NSImage(data: screenCapture.imageData) else { return }
+        guard let screenshotImage = NSImage(
+            data: screenCapture.frozenDisplayImageData ?? screenCapture.imageData
+        ) else { return }
         previouslyActiveApplication = NSWorkspace.shared.frontmostApplication
         let targetScreen = NSScreen.screens.first { screen in
             screen.frame.intersects(screenCapture.displayFrame)
@@ -64,7 +73,7 @@ final class ScreenshotPromptWindowManager {
             providerName: providerName,
             modelName: modelName,
             onCancel: { [weak self] in self?.close() },
-            onSubmit: { [weak self] prompt, annotations, interactionMode in
+            onSubmit: { [weak self] prompt, annotations in
                 guard let self else { return }
                 let annotatedCapture = self.captureByApplyingAnnotations(
                     annotations,
@@ -72,7 +81,7 @@ final class ScreenshotPromptWindowManager {
                     screenshotImage: screenshotImage
                 )
                 self.close()
-                self.onSubmit(prompt, annotatedCapture, interactionMode)
+                self.onSubmit(prompt, annotatedCapture)
             }
         )
 
@@ -85,6 +94,7 @@ final class ScreenshotPromptWindowManager {
             defer: false
         )
         panel.contentView = hostingView
+        panel.cancelHandler = { [weak self] in self?.close() }
         panel.isFloatingPanel = true
         panel.level = .screenSaver
         panel.isOpaque = true
@@ -92,9 +102,9 @@ final class ScreenshotPromptWindowManager {
         panel.hasShadow = false
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         panel.setFrame(targetScreen.frame, display: true)
-        panel.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
         window = panel
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
     }
 
     func close(restorePreviousApplication: Bool = true) {
@@ -112,7 +122,19 @@ final class ScreenshotPromptWindowManager {
         to screenCapture: CompanionScreenCapture,
         screenshotImage: NSImage
     ) -> CompanionScreenCapture {
-        guard !annotations.isEmpty else { return screenCapture }
+        guard !annotations.isEmpty else {
+            return CompanionScreenCapture(
+                imageData: screenCapture.imageData,
+                frozenDisplayImageData: nil,
+                label: screenCapture.label,
+                isCursorScreen: screenCapture.isCursorScreen,
+                displayWidthInPoints: screenCapture.displayWidthInPoints,
+                displayHeightInPoints: screenCapture.displayHeightInPoints,
+                displayFrame: screenCapture.displayFrame,
+                screenshotWidthInPixels: screenCapture.screenshotWidthInPixels,
+                screenshotHeightInPixels: screenCapture.screenshotHeightInPixels
+            )
+        }
 
         let imageSize = NSSize(
             width: screenCapture.screenshotWidthInPixels,
@@ -139,6 +161,7 @@ final class ScreenshotPromptWindowManager {
 
         return CompanionScreenCapture(
             imageData: jpegData,
+            frozenDisplayImageData: nil,
             label: screenCapture.label + " (user annotations are marked in red)",
             isCursorScreen: screenCapture.isCursorScreen,
             displayWidthInPoints: screenCapture.displayWidthInPoints,
@@ -231,13 +254,13 @@ private struct ScreenshotPromptView: View {
     let providerName: String
     let modelName: String
     let onCancel: () -> Void
-    let onSubmit: (String, [ScreenshotAnnotation], OpenClickyInteractionMode) -> Void
+    let onSubmit: (String, [ScreenshotAnnotation]) -> Void
 
     @State private var prompt = ""
     @State private var selectedTool: ScreenshotAnnotationTool?
     @State private var annotations: [ScreenshotAnnotation] = []
     @State private var activeAnnotation: ScreenshotAnnotation?
-    @State private var interactionMode: OpenClickyInteractionMode = .ask
+    @State private var isAnnotationPaletteVisible = false
     @FocusState private var isPromptFocused: Bool
 
     var body: some View {
@@ -248,90 +271,180 @@ private struct ScreenshotPromptView: View {
                 .scaledToFill()
                 .ignoresSafeArea()
 
-            Color.black.opacity(0.08)
-                .ignoresSafeArea()
-
             annotationCanvas
 
             launcherControls
-                .padding(.top, 42)
+                .padding(.top, 34)
         }
-        .onAppear { isPromptFocused = true }
+        .onAppear {
+            // Focus after AppKit finishes making the borderless panel key.
+            // Setting FocusState synchronously races panel activation.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                isPromptFocused = true
+            }
+        }
         .onExitCommand(perform: onCancel)
     }
 
     private var launcherControls: some View {
-        HStack(spacing: 12) {
-            HStack(spacing: 10) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 17, weight: .medium))
-                    .foregroundStyle(.secondary)
-
-                TextField("Ask OpenClicky…", text: $prompt)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 18, weight: .medium))
-                    .focused($isPromptFocused)
-                    .onSubmit(submit)
-
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(providerName)
-                        .font(.system(size: 9, weight: .semibold))
-                    Text(modelName)
-                        .font(.system(size: 8))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Picker("Mode", selection: $interactionMode) {
-                    ForEach(OpenClickyInteractionMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
+        VStack(spacing: 10) {
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.accentColor.opacity(0.16))
+                            .frame(width: 34, height: 34)
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
                     }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .frame(width: 150)
 
-                Button(action: submit) {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 32, height: 32)
-                        .background(canSubmit ? Color.accentColor : Color.secondary.opacity(0.35), in: Circle())
+                    TextField("Ask anything about this screen…", text: $prompt)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 17, weight: .medium))
+                        .focused($isPromptFocused)
+                        .onSubmit(submit)
+
+                    annotationToggleButton
+                    closeButton
+                    submitButton
                 }
-                .buttonStyle(.plain)
-                .disabled(!canSubmit)
-                .pointerCursor()
+                .padding(.horizontal, 12)
+                .frame(height: 56)
+
+                Divider()
+                    .opacity(0.45)
+                    .padding(.horizontal, 14)
+
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 6, height: 6)
+                    Text(providerName)
+                        .fontWeight(.medium)
+                    Text("·")
+                    Text(modelName)
+                        .lineLimit(1)
+                    Spacer()
+                    Text("Enter to send")
+                    Text("·")
+                    Text("Esc to close")
+                }
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 18)
+                .frame(height: 25)
             }
-            .padding(.leading, 18)
-            .padding(.trailing, 10)
-            .frame(width: 700, height: 62)
-            .background(.regularMaterial, in: Capsule())
-            .overlay(Capsule().stroke(Color.white.opacity(0.16), lineWidth: 1))
-            .shadow(color: .black.opacity(0.35), radius: 20, y: 8)
+            .frame(width: 680)
+            .background(.ultraThickMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.38), radius: 24, y: 10)
 
+            if isAnnotationPaletteVisible {
+                annotationPalette
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy(duration: 0.22), value: isAnnotationPaletteVisible)
+    }
+
+    private var annotationToggleButton: some View {
+        Button {
+            isAnnotationPaletteVisible.toggle()
+            selectedTool = isAnnotationPaletteVisible ? (selectedTool ?? .arrow) : nil
+            if !isAnnotationPaletteVisible {
+                isPromptFocused = true
+            }
+        } label: {
+            Image(systemName: isAnnotationPaletteVisible ? "pencil.tip.crop.circle.fill" : "pencil.tip.crop.circle")
+                .font(.system(size: 17, weight: .medium))
+                .frame(width: 34, height: 34)
+                .background(
+                    isAnnotationPaletteVisible ? Color.accentColor.opacity(0.16) : Color.clear,
+                    in: Circle()
+                )
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isAnnotationPaletteVisible ? Color.accentColor : Color.secondary)
+        .help("Annotate screen")
+        .pointerCursor()
+    }
+
+    private var closeButton: some View {
+        Button(action: onCancel) {
+            Image(systemName: "xmark")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 32, height: 32)
+                .background(Color.primary.opacity(0.06), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .help("Close (Esc)")
+        .pointerCursor()
+    }
+
+    private var submitButton: some View {
+        Button(action: submit) {
+            Image(systemName: "arrow.up")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 34, height: 34)
+                .background(
+                    canSubmit ? Color.accentColor : Color.secondary.opacity(0.28),
+                    in: Circle()
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(!canSubmit)
+        .help("Send")
+        .pointerCursor()
+    }
+
+    private var annotationPalette: some View {
+        HStack(spacing: 4) {
             ForEach(ScreenshotAnnotationTool.allCases) { tool in
                 toolButton(tool)
             }
 
-            Button {
+            Divider()
+                .frame(height: 24)
+                .padding(.horizontal, 4)
+
+            paletteButton(
+                iconName: "arrow.uturn.backward",
+                helpText: "Undo",
+                isDisabled: annotations.isEmpty
+            ) {
                 _ = annotations.popLast()
+            }
+
+            paletteButton(
+                iconName: "trash",
+                helpText: "Clear annotations",
+                isDisabled: annotations.isEmpty
+            ) {
+                annotations.removeAll()
+            }
+
+            Button("Done") {
+                isAnnotationPaletteVisible = false
+                selectedTool = nil
                 isPromptFocused = true
-            } label: {
-                Image(systemName: "arrow.uturn.backward")
-                    .font(.system(size: 17, weight: .medium))
-                    .frame(width: 58, height: 58)
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.primary)
-            .background(.regularMaterial, in: Circle())
-            .overlay(Circle().stroke(Color.white.opacity(0.16), lineWidth: 1))
-            .shadow(color: .black.opacity(0.3), radius: 16, y: 7)
-            .disabled(annotations.isEmpty)
-            .opacity(annotations.isEmpty ? 0.45 : 1)
-            .help("Undo")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(Color.accentColor)
+            .padding(.horizontal, 10)
+            .frame(height: 34)
             .pointerCursor()
         }
-        .padding(.horizontal, 24)
+        .padding(6)
+        .background(.ultraThickMaterial, in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.16), lineWidth: 1))
+        .shadow(color: .black.opacity(0.3), radius: 16, y: 7)
     }
 
     private func toolButton(_ tool: ScreenshotAnnotationTool) -> some View {
@@ -340,19 +453,35 @@ private struct ScreenshotPromptView: View {
             isPromptFocused = true
         } label: {
             Image(systemName: tool.iconName)
-                .font(.system(size: 18, weight: .medium))
-                .frame(width: 58, height: 58)
+                .font(.system(size: 15, weight: .medium))
+                .frame(width: 34, height: 34)
         }
         .buttonStyle(.plain)
         .foregroundStyle(selectedTool == tool ? Color.white : Color.primary)
         .background(
             selectedTool == tool ? Color.accentColor : Color.clear,
-            in: Circle()
+            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
         )
-        .background(.regularMaterial, in: Circle())
-        .overlay(Circle().stroke(Color.white.opacity(0.16), lineWidth: 1))
-        .shadow(color: .black.opacity(0.3), radius: 16, y: 7)
         .help(tool.accessibilityLabel)
+        .pointerCursor()
+    }
+
+    private func paletteButton(
+        iconName: String,
+        helpText: String,
+        isDisabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: iconName)
+                .font(.system(size: 14, weight: .medium))
+                .frame(width: 34, height: 34)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.35 : 1)
+        .help(helpText)
         .pointerCursor()
     }
 
@@ -442,6 +571,11 @@ private struct ScreenshotPromptView: View {
 
         context.stroke(
             path,
+            with: .color(.white.opacity(0.9)),
+            style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round)
+        )
+        context.stroke(
+            path,
             with: .color(.red),
             style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round)
         )
@@ -514,6 +648,6 @@ private struct ScreenshotPromptView: View {
         let submittedPrompt = trimmedPrompt.isEmpty
             ? "Explain what I marked and guide me through it."
             : trimmedPrompt
-        onSubmit(submittedPrompt, annotations, interactionMode)
+        onSubmit(submittedPrompt, annotations)
     }
 }

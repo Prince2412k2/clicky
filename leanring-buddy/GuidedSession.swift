@@ -1,6 +1,7 @@
 import Foundation
 
 enum OpenClickyInteractionMode: String, CaseIterable, Identifiable {
+    case automatic
     case ask
     case guide
     case act
