@@ -35,12 +35,10 @@ mkdir -p \
     "$APP_PATH/Contents/Resources"
 cp "$EXECUTABLE_PATH" "$APP_PATH/Contents/MacOS/OpenClicky"
 
-# SwiftPM resource accessors expect dependency bundles beside the executable
-# during development. Keeping a copy in Resources also follows normal app
-# bundle layout for tools that inspect packaged resources.
+# Keep dependency resources in the canonical signed app-bundle location.
+# SwiftPM also retains its build-path fallback for incremental development.
 for resourceBundle in "$BIN_PATH"/*.bundle(N); do
     ditto "$resourceBundle" "$APP_PATH/Contents/Resources/${resourceBundle:t}"
-    ditto "$resourceBundle" "$APP_PATH/${resourceBundle:t}"
 done
 for framework in "$BIN_PATH"/*.framework(N); do
     ditto "$framework" "$APP_PATH/Contents/Frameworks/${framework:t}"
