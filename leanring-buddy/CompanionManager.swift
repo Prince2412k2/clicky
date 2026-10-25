@@ -1002,6 +1002,12 @@ final class CompanionManager: ObservableObject {
     }
 
     private func performApprovedComputerClick(_ pendingAction: PendingComputerClickAction) {
+        detectedElementScreenLocation = pendingAction.appKitLocation
+        detectedElementDisplayFrame = NSScreen.screens.first(where: {
+            $0.frame.contains(pendingAction.appKitLocation)
+        })?.frame
+        detectedElementBubbleText = pendingAction.label
+
         Task {
             do {
                 if let elementID = pendingAction.semanticElementID,

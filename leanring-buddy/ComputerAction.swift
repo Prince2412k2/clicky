@@ -79,12 +79,7 @@ enum ComputerClickExecutor {
         try await Task.sleep(for: .milliseconds(250))
         let coreGraphicsLocation = convertAppKitPointToCoreGraphics(action.appKitLocation)
 
-        guard let moveEvent = CGEvent(
-            mouseEventSource: nil,
-            mouseType: .mouseMoved,
-            mouseCursorPosition: coreGraphicsLocation,
-            mouseButton: .left
-        ), let mouseDownEvent = CGEvent(
+        guard let mouseDownEvent = CGEvent(
             mouseEventSource: nil,
             mouseType: .leftMouseDown,
             mouseCursorPosition: coreGraphicsLocation,
@@ -102,10 +97,15 @@ enum ComputerClickExecutor {
             )
         }
 
-        moveEvent.post(tap: .cghidEventTap)
-        try await Task.sleep(for: .milliseconds(120))
-        mouseDownEvent.post(tap: .cghidEventTap)
-        mouseUpEvent.post(tap: .cghidEventTap)
+        if let targetProcessIdentifier = action.targetApplication?.processIdentifier {
+            mouseDownEvent.postToPid(targetProcessIdentifier)
+            mouseUpEvent.postToPid(targetProcessIdentifier)
+        } else {
+            // Global posting is fallback-only. Semantic Accessibility actions and
+            // process-targeted coordinate events avoid moving the physical pointer.
+            mouseDownEvent.post(tap: .cghidEventTap)
+            mouseUpEvent.post(tap: .cghidEventTap)
+        }
     }
 
     static func convertAppKitPointToCoreGraphics(_ appKitPoint: CGPoint) -> CGPoint {

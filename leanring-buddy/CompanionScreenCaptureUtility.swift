@@ -78,8 +78,14 @@ enum CompanionScreenCaptureUtility {
 
         let maxDimension = 1280
         let frozenDisplayConfiguration = SCStreamConfiguration()
-        frozenDisplayConfiguration.width = display.width
-        frozenDisplayConfiguration.height = display.height
+        let nativeDisplayWidth = CGDisplayPixelsWide(display.displayID)
+        let nativeDisplayHeight = CGDisplayPixelsHigh(display.displayID)
+        frozenDisplayConfiguration.width = nativeDisplayWidth > 0
+            ? nativeDisplayWidth
+            : display.width
+        frozenDisplayConfiguration.height = nativeDisplayHeight > 0
+            ? nativeDisplayHeight
+            : display.height
 
         // Keep the frozen launcher lossless and Retina-sharp without sending
         // that much larger image to the selected model.
