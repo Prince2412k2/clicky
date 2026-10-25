@@ -262,6 +262,11 @@ final class CompanionManager: ObservableObject {
     }
 
     func start() {
+        OpenClickyDiagnostics.record("companion.start", metadata: [
+            "enabled": isOpenClickyEnabled,
+            "provider": selectedAIProvider.rawValue,
+            "speech": speechOutput.rawValue
+        ])
         refreshAllPermissions()
         startPermissionPolling()
         bindVoiceStateObservation()
@@ -481,6 +486,9 @@ final class CompanionManager: ObservableObject {
             window.isVisible && window.frame.contains(clickLocation)
         }) else { return }
 
+        OpenClickyDiagnostics.record("guide.userInteractionObserved", metadata: [
+            "step": guidedStepCount
+        ])
         scheduleGuidedSessionAdvanceAfterInteraction()
     }
 
@@ -488,12 +496,19 @@ final class CompanionManager: ObservableObject {
         guard isOpenClickyEnabled,
               isGuidedSessionActive,
               isWaitingForGuidedAction else { return }
+        OpenClickyDiagnostics.record("guide.advanceScheduled", metadata: [
+            "approval": allowsClicksForGuidedSession,
+            "step": guidedStepCount
+        ])
         displayedResponseText = ""
         responseClearTask?.cancel()
         guidedAdvanceTask?.cancel()
         guidedAdvanceTask = Task {
             try? await Task.sleep(for: .milliseconds(1200))
             guard !Task.isCancelled else { return }
+            OpenClickyDiagnostics.record("guide.advanceCaptureStarting", metadata: [
+                "step": guidedStepCount
+            ])
             isWaitingForGuidedAction = false
             systemTTSClient.stopPlayback()
             localKokoroTTSClient.stopPlayback()
@@ -511,6 +526,9 @@ final class CompanionManager: ObservableObject {
                     interactionMode: allowsClicksForGuidedSession ? .act : .guide
                 )
             } catch {
+                OpenClickyDiagnostics.record("guide.advanceFailed", metadata: [
+                    "error": error.localizedDescription
+                ])
                 interactionErrorMessage = "Could not continue the walkthrough: \(error.localizedDescription)"
                 stopGuidedSession()
             }
@@ -526,12 +544,17 @@ final class CompanionManager: ObservableObject {
         }
 
         interactionErrorMessage = nil
+        OpenClickyDiagnostics.record("launcher.captureStarting")
         NotificationCenter.default.post(name: .openClickyDismissPanel, object: nil)
         screenshotPromptPresentationTask?.cancel()
         screenshotPromptPresentationTask = Task {
             do {
                 let screenCapture = try await CompanionScreenCaptureUtility.captureScreenContainingPointerAsJPEG()
                 guard !Task.isCancelled else { return }
+                OpenClickyDiagnostics.record("launcher.presenting", metadata: [
+                    "model": selectedModel,
+                    "provider": selectedAIProvider.rawValue
+                ])
                 screenshotPromptWindowManager.show(
                     screenCapture: screenCapture,
                     providerName: selectedAIProvider.displayName,
@@ -539,6 +562,9 @@ final class CompanionManager: ObservableObject {
                 )
             } catch {
                 guard !Task.isCancelled else { return }
+                OpenClickyDiagnostics.record("launcher.captureFailed", metadata: [
+                    "error": error.localizedDescription
+                ])
                 let message = "Could not capture the current display: \(error.localizedDescription)"
                 interactionErrorMessage = message
                 displayedResponseText = message
@@ -648,6 +674,11 @@ final class CompanionManager: ObservableObject {
         isGuidedFollowUp: Bool = false,
         interactionMode: OpenClickyInteractionMode = .automatic
     ) {
+        OpenClickyDiagnostics.record("response.started", metadata: [
+            "followUp": isGuidedFollowUp,
+            "mode": interactionMode.rawValue,
+            "suppliedCaptures": suppliedScreenCaptures?.count ?? 0
+        ])
         if !isGuidedFollowUp {
             stopGuidedSession(clearAnnotations: false)
         }
@@ -673,7 +704,18 @@ final class CompanionManager: ObservableObject {
 
                 guard !Task.isCancelled else { return }
 
-                let semanticSnapshot = try? await semanticAutomationService.captureFrontmostSnapshot()
+                let semanticSnapshot: OpenClickySemanticSnapshot?
+                do {
+                    semanticSnapshot = try await semanticAutomationService.captureFrontmostSnapshot()
+                    OpenClickyDiagnostics.record("semanticSnapshot.complete", metadata: [
+                        "elements": semanticSnapshot?.elementsByID.count ?? 0
+                    ])
+                } catch {
+                    semanticSnapshot = nil
+                    OpenClickyDiagnostics.record("semanticSnapshot.failed", metadata: [
+                        "error": error.localizedDescription
+                    ])
+                }
 
                 // Build image labels with the actual screenshot pixel dimensions
                 // so Claude's coordinate space matches the image it sees. We
@@ -746,6 +788,14 @@ final class CompanionManager: ObservableObject {
                 let annotationParseResult = ScreenAnnotationParser.parse(from: guidedParseResult.responseText)
                 let parseResult = Self.parsePointingCoordinates(from: annotationParseResult.responseText)
                 let spokenText = parseResult.spokenText
+                OpenClickyDiagnostics.record("response.parsed", metadata: [
+                    "action": computerActionParseResult.clickAction?.elementID == nil
+                        ? (computerActionParseResult.clickAction == nil ? "none" : "coordinate")
+                        : "semantic",
+                    "annotations": annotationParseResult.annotations.count,
+                    "guideDirective": guidedParseResult.directive?.rawValue ?? "none",
+                    "point": parseResult.coordinate == nil ? "none" : "present"
+                ])
                 displayedResponseText = spokenText
 
                 // Handle element pointing if Claude returned coordinates.
@@ -863,7 +913,12 @@ final class CompanionManager: ObservableObject {
                 scheduleResponseTextClear()
             } catch is CancellationError {
                 // User spoke again — response was interrupted
+                OpenClickyDiagnostics.record("response.cancelled")
             } catch {
+                OpenClickyDiagnostics.record("response.failed", metadata: [
+                    "error": error.localizedDescription,
+                    "followUp": isGuidedFollowUp
+                ])
                 showResponseError(error.localizedDescription)
             }
 
@@ -931,6 +986,14 @@ final class CompanionManager: ObservableObject {
     }
 
     func stopGuidedSession(clearAnnotations: Bool = true) {
+        if isGuidedSessionActive || isWaitingForGuidedAction || allowsClicksForGuidedSession {
+            OpenClickyDiagnostics.record("guide.stopped", metadata: [
+                "approvalWasActive": allowsClicksForGuidedSession,
+                "clearAnnotations": clearAnnotations,
+                "step": guidedStepCount,
+                "waiting": isWaitingForGuidedAction
+            ])
+        }
         guidedAdvanceTask?.cancel()
         guidedAdvanceTask = nil
         isGuidedSessionActive = false
@@ -976,7 +1039,16 @@ final class CompanionManager: ObservableObject {
             targetApplication: NSWorkspace.shared.frontmostApplication
         )
 
+        OpenClickyDiagnostics.record("action.requested", metadata: [
+            "approvalActive": allowsClicksForGuidedSession,
+            "guided": isGuidedSessionActive,
+            "target": semanticElement == nil ? "coordinate" : "semantic"
+        ])
+
         if isGuidedSessionActive && allowsClicksForGuidedSession {
+            OpenClickyDiagnostics.record("action.autoApproved", metadata: [
+                "step": guidedStepCount
+            ])
             performApprovedComputerClick(pendingAction)
             return
         }
@@ -985,16 +1057,21 @@ final class CompanionManager: ObservableObject {
             action: pendingAction,
             allowsWalkthroughApproval: isGuidedSessionActive,
             onAllowOnce: { [weak self] in
+                OpenClickyDiagnostics.record("action.allowedOnce")
                 self?.computerActionApprovalWindowManager.close()
                 self?.performApprovedComputerClick(pendingAction)
             },
             onAllowWalkthrough: { [weak self] in
                 guard let self else { return }
+                OpenClickyDiagnostics.record("action.allowedWalkthrough", metadata: [
+                    "step": self.guidedStepCount
+                ])
                 self.computerActionApprovalWindowManager.close()
                 self.allowsClicksForGuidedSession = true
                 self.performApprovedComputerClick(pendingAction)
             },
             onCancel: { [weak self] in
+                OpenClickyDiagnostics.record("action.cancelled")
                 self?.computerActionApprovalWindowManager.close()
                 self?.stopGuidedSession()
             }
@@ -1002,6 +1079,10 @@ final class CompanionManager: ObservableObject {
     }
 
     private func performApprovedComputerClick(_ pendingAction: PendingComputerClickAction) {
+        OpenClickyDiagnostics.record("action.executionStarting", metadata: [
+            "approvalActive": allowsClicksForGuidedSession,
+            "target": pendingAction.semanticElementID == nil ? "coordinate" : "semantic"
+        ])
         detectedElementScreenLocation = pendingAction.appKitLocation
         detectedElementDisplayFrame = NSScreen.screens.first(where: {
             $0.frame.contains(pendingAction.appKitLocation)
@@ -1019,8 +1100,16 @@ final class CompanionManager: ObservableObject {
                 } else {
                     try await ComputerClickExecutor.perform(pendingAction)
                 }
+                OpenClickyDiagnostics.record("action.executionSucceeded", metadata: [
+                    "approvalActive": allowsClicksForGuidedSession,
+                    "target": pendingAction.semanticElementID == nil ? "coordinate" : "semantic"
+                ])
                 scheduleGuidedSessionAdvanceAfterInteraction()
             } catch {
+                OpenClickyDiagnostics.record("action.executionFailed", metadata: [
+                    "error": error.localizedDescription,
+                    "target": pendingAction.semanticElementID == nil ? "coordinate" : "semantic"
+                ])
                 interactionErrorMessage = "Could not perform the approved click: \(error.localizedDescription)"
                 stopGuidedSession()
             }
@@ -1032,6 +1121,12 @@ final class CompanionManager: ObservableObject {
         originalPrompt: String,
         isGuidedFollowUp: Bool
     ) {
+        OpenClickyDiagnostics.record("guide.directiveResolved", metadata: [
+            "approval": allowsClicksForGuidedSession,
+            "directive": directive?.rawValue ?? "none",
+            "followUp": isGuidedFollowUp,
+            "stepBeforeUpdate": guidedStepCount
+        ])
         switch directive {
         case .continueGuiding:
             annotationClearTask?.cancel()

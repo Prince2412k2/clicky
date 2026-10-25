@@ -40,6 +40,8 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 
 **Dual build paths**: The Xcode project remains the canonical IDE and CI project. `Package.swift` points at the same app sources for lightweight local development with Command Line Tools. `scripts/dev` downloads pinned dependency snapshots, builds incrementally with SwiftPM, packages a native app bundle, signs with the stable Apple Development identity, and relaunches from `.build/OpenClicky.app`.
 
+**Local diagnostics**: `OpenClickyDiagnostics` mirrors privacy-safe lifecycle events to unified logging and a rotating file under `~/Library/Logs/OpenClicky/`. Logs cover capture dimensions, launcher state, parsed directive types, walkthrough approval state, and action execution without storing prompts, responses, screenshots, keys, or credentials. There is no upload or telemetry path.
+
 **Visual prompt launcher**: Control+Command freezes the current display at native resolution under a borderless full-screen layer while a smaller image is retained for model input. A Spotlight-style field receives focus immediately, the model infers whether to answer, guide, or request an approved action, and drawing controls stay collapsed until requested. Escape closes the complete launcher from any state.
 
 **Bounded guidance**: Guided walkthroughs observe target-app clicks, keyboard input, and scrolling, debounce for 1.2 seconds of UI settling, compare fresh semantic fingerprints, and stop after fifteen steps unless ended earlier. Synthetic clicks require explicit approval; walkthrough-wide approval is reset when the walkthrough stops.
@@ -80,6 +82,7 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
+| `OpenClickyDiagnostics.swift` | ~75 | Privacy-safe unified and rotating file diagnostics with Finder reveal support. |
 | `Package.swift` | ~75 | Parallel SwiftPM app and test manifest for lightweight local builds. |
 | `scripts/build-local` | ~125 | Builds, bundles, resources, and signs a native app without Xcode. |
 | `scripts/dev` | ~15 | Rebuilds and relaunches the fixed-path development app. |

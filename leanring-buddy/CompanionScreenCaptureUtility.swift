@@ -93,6 +93,12 @@ enum CompanionScreenCaptureUtility {
             contentFilter: filter,
             configuration: frozenDisplayConfiguration
         )
+        OpenClickyDiagnostics.record("capture.complete", metadata: [
+            "display": display.displayID,
+            "logical": "\(Int(displayFrame.width))x\(Int(displayFrame.height))",
+            "nativeRequested": "\(frozenDisplayConfiguration.width)x\(frozenDisplayConfiguration.height)",
+            "nativeReceived": "\(frozenDisplayImage.width)x\(frozenDisplayImage.height)"
+        ])
 
         guard let frozenDisplayImageData = NSBitmapImageRep(cgImage: frozenDisplayImage)
                 .representation(using: .png, properties: [:]),

@@ -665,6 +665,14 @@ struct CompanionPanelView: View {
             .pointerCursor()
 
             Button {
+                OpenClickyDiagnostics.revealLog()
+            } label: {
+                actionRow(title: "Open Debug Log", iconName: "doc.text.magnifyingglass", showsChevron: true)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+
+            Button {
                 NSApp.terminate(nil)
             } label: {
                 actionRow(title: "Quit OpenClicky", iconName: "power", iconColor: .red)

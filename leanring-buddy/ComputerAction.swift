@@ -98,11 +98,18 @@ enum ComputerClickExecutor {
         }
 
         if let targetProcessIdentifier = action.targetApplication?.processIdentifier {
+            OpenClickyDiagnostics.record("coordinateClick.posting", metadata: [
+                "destination": "process",
+                "pid": targetProcessIdentifier
+            ])
             mouseDownEvent.postToPid(targetProcessIdentifier)
             mouseUpEvent.postToPid(targetProcessIdentifier)
         } else {
             // Global posting is fallback-only. Semantic Accessibility actions and
             // process-targeted coordinate events avoid moving the physical pointer.
+            OpenClickyDiagnostics.record("coordinateClick.posting", metadata: [
+                "destination": "global"
+            ])
             mouseDownEvent.post(tap: .cghidEventTap)
             mouseUpEvent.post(tap: .cghidEventTap)
         }

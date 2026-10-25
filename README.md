@@ -67,6 +67,10 @@ OPENCLICKY_CONFIGURATION=release ./scripts/dev
 
 The Xcode project remains available for contributors who prefer Xcode. Both build paths use `org.openclicky.app` and the same source files.
 
+## Local diagnostics
+
+Choose **Open Debug Log** from the menu to reveal `~/Library/Logs/OpenClicky/OpenClicky.log`. The rotating local log records capture dimensions, launcher lifecycle, model directives, walkthrough state, approval scope, and action execution paths. It never records prompt or response text, screenshots, API keys, or credentials, and it is never uploaded.
+
 GitHub alpha releases are signed with the same team identity using the encrypted `APPLE_SIGNING_CERTIFICATE_BASE64`, `APPLE_SIGNING_CERTIFICATE_PASSWORD`, and `APPLE_SIGNING_KEYCHAIN_PASSWORD` repository secrets. CI refuses to publish if these credentials are unavailable or if the resulting bundle does not report team `935NAK66J6`.
 
 ## Build

@@ -67,6 +67,11 @@ final class ScreenshotPromptWindowManager {
             screen.frame.intersects(screenCapture.displayFrame)
         } ?? NSScreen.main
         guard let targetScreen else { return }
+        OpenClickyDiagnostics.record("launcher.shown", metadata: [
+            "analysisPixels": "\(screenCapture.screenshotWidthInPixels)x\(screenCapture.screenshotHeightInPixels)",
+            "displayPoints": "\(screenCapture.displayWidthInPoints)x\(screenCapture.displayHeightInPoints)",
+            "frozenBytes": screenCapture.frozenDisplayImageData?.count ?? 0
+        ])
 
         let promptView = ScreenshotPromptView(
             screenshotImage: screenshotImage,
@@ -75,6 +80,10 @@ final class ScreenshotPromptWindowManager {
             onCancel: { [weak self] in self?.close() },
             onSubmit: { [weak self] prompt, annotations in
                 guard let self else { return }
+                OpenClickyDiagnostics.record("launcher.submitted", metadata: [
+                    "annotations": annotations.count,
+                    "promptCharacters": prompt.count
+                ])
                 let annotatedCapture = self.captureByApplyingAnnotations(
                     annotations,
                     to: screenCapture,
@@ -108,6 +117,11 @@ final class ScreenshotPromptWindowManager {
     }
 
     func close(restorePreviousApplication: Bool = true) {
+        if window != nil {
+            OpenClickyDiagnostics.record("launcher.closed", metadata: [
+                "restorePreviousApplication": restorePreviousApplication
+            ])
+        }
         window?.orderOut(nil)
         window?.contentView = nil
         window = nil

@@ -32,6 +32,10 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
+        OpenClickyDiagnostics.record("app.launch", metadata: [
+            "build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
+            "path": Bundle.main.bundleURL.path
+        ])
 
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
         companionManager.start()
@@ -41,6 +45,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        OpenClickyDiagnostics.record("app.terminate")
         companionManager.stop()
     }
 
