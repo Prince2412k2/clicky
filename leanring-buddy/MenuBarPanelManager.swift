@@ -15,7 +15,8 @@ import AppKit
 import SwiftUI
 
 extension Notification.Name {
-    static let clickyDismissPanel = Notification.Name("clickyDismissPanel")
+    static let openClickyDismissPanel = Notification.Name("openClickyDismissPanel")
+    static let openClickyShowPanel = Notification.Name("openClickyShowPanel")
 }
 
 /// Custom NSPanel subclass that can become the key window even with
@@ -30,10 +31,11 @@ final class MenuBarPanelManager: NSObject {
     private var panel: NSPanel?
     private var clickOutsideMonitor: Any?
     private var dismissPanelObserver: NSObjectProtocol?
+    private var showPanelObserver: NSObjectProtocol?
 
     private let companionManager: CompanionManager
-    private let panelWidth: CGFloat = 320
-    private let panelHeight: CGFloat = 380
+    private let panelWidth: CGFloat = 310
+    private let panelHeight: CGFloat = 320
 
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
@@ -41,11 +43,20 @@ final class MenuBarPanelManager: NSObject {
         createStatusItem()
 
         dismissPanelObserver = NotificationCenter.default.addObserver(
-            forName: .clickyDismissPanel,
+            forName: .openClickyDismissPanel,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             self?.hidePanel()
+        }
+        showPanelObserver = NotificationCenter.default.addObserver(
+            forName: .openClickyShowPanel,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.showPanel()
+            }
         }
     }
 
@@ -54,6 +65,9 @@ final class MenuBarPanelManager: NSObject {
             NSEvent.removeMonitor(monitor)
         }
         if let observer = dismissPanelObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = showPanelObserver {
             NotificationCenter.default.removeObserver(observer)
         }
     }
@@ -65,15 +79,15 @@ final class MenuBarPanelManager: NSObject {
 
         guard let button = statusItem?.button else { return }
 
-        button.image = makeClickyMenuBarIcon()
+        button.image = makeOpenClickyMenuBarIcon()
         button.image?.isTemplate = true
         button.action = #selector(statusItemClicked)
         button.target = self
     }
 
-    /// Draws the clicky triangle as a menu bar icon. Uses the same shape
+    /// Draws the OpenClicky triangle as a menu bar icon. Uses the same shape
     /// and rotation as the in-app cursor so the menu bar icon matches.
-    private func makeClickyMenuBarIcon() -> NSImage {
+    private func makeOpenClickyMenuBarIcon() -> NSImage {
         let iconSize: CGFloat = 18
         let image = NSImage(size: NSSize(width: iconSize, height: iconSize))
         image.lockFocus()
@@ -188,7 +202,17 @@ final class MenuBarPanelManager: NSObject {
         let actualPanelHeight = fittingSize.height
 
         // Horizontally center the panel beneath the status item icon
-        let panelOriginX = statusItemFrame.midX - (panelWidth / 2)
+        let preferredPanelOriginX = statusItemFrame.midX - (panelWidth / 2)
+        let visibleFrame = buttonWindow.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+        let panelOriginX: CGFloat
+        if let visibleFrame {
+            panelOriginX = min(
+                max(preferredPanelOriginX, visibleFrame.minX + 8),
+                visibleFrame.maxX - panelWidth - 8
+            )
+        } else {
+            panelOriginX = preferredPanelOriginX
+        }
         let panelOriginY = statusItemFrame.minY - actualPanelHeight - gapBelowMenuBar
 
         panel.setFrame(
@@ -224,7 +248,7 @@ final class MenuBarPanelManager: NSObject {
                 guard panel.isVisible else { return }
 
                 // If permissions aren't all granted yet, a system dialog
-                // may have focus — don't dismiss during onboarding.
+                // may have focus — don't dismiss during setup.
                 if !self.companionManager.allPermissionsGranted && !NSApp.isActive {
                     return
                 }

@@ -1,0 +1,36 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+PROJECT_ROOT="${0:A:h:h}"
+APP_PATH="${OPENCLICKY_APP_PATH:-$PROJECT_ROOT/.build/OpenClicky.app}"
+
+"$PROJECT_ROOT/scripts/build-local"
+
+# Relaunch from the exact same bundle path after every build. Combined with
+# the stable certificate and bundle identifier, this preserves TCC identity.
+pkill -x OpenClicky 2>/dev/null || true
+
+# LaunchServices can return -600 when asked to reopen the same LSUIElement app
+# before the previous process has fully terminated. Wait for shutdown and
+# register the freshly rebuilt bundle before launching it as a new instance.
+for _ in {1..50}; do
+    if ! pgrep -x OpenClicky >/dev/null; then
+        break
+    fi
+    sleep 0.1
+done
+
+LAUNCH_SERVICES_REGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+"$LAUNCH_SERVICES_REGISTER" -f "$APP_PATH"
+
+if ! open -n "$APP_PATH"; then
+    # Direct execution still has the correct Bundle.main because the binary is
+    # inside the app bundle, and avoids leaving development blocked by a stale
+    # LaunchServices database.
+    nohup "$APP_PATH/Contents/MacOS/OpenClicky" \
+        > "$PROJECT_ROOT/.build/OpenClicky-dev.log" \
+        2>&1 &
+fi
+
+echo "Launched $APP_PATH"

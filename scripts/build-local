@@ -1,0 +1,129 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+PROJECT_ROOT="${0:A:h:h}"
+CONFIGURATION="${OPENCLICKY_CONFIGURATION:-debug}"
+APP_PATH="${OPENCLICKY_APP_PATH:-$PROJECT_ROOT/.build/OpenClicky.app}"
+TEAM_IDENTIFIER="${OPENCLICKY_TEAM_IDENTIFIER:-935NAK66J6}"
+ENTITLEMENTS_PATH="$PROJECT_ROOT/leanring-buddy/leanring-buddy.entitlements"
+ICON_SOURCE_PATH="$PROJECT_ROOT/leanring-buddy/Assets.xcassets/AppIcon.appiconset"
+
+cd "$PROJECT_ROOT"
+
+if [[ "$APP_PATH" != *.app || "$APP_PATH" == "/Applications" ]]; then
+    echo "OPENCLICKY_APP_PATH must point to a specific .app bundle." >&2
+    exit 1
+fi
+
+"$PROJECT_ROOT/scripts/bootstrap-local-dependencies"
+
+echo "Building OpenClicky ($CONFIGURATION)…"
+swift build --configuration "$CONFIGURATION" --product OpenClicky
+BIN_PATH="$(swift build --configuration "$CONFIGURATION" --show-bin-path)"
+EXECUTABLE_PATH="$BIN_PATH/OpenClicky"
+
+if [[ ! -x "$EXECUTABLE_PATH" ]]; then
+    echo "OpenClicky executable was not produced at $EXECUTABLE_PATH" >&2
+    exit 1
+fi
+
+rm -rf "$APP_PATH"
+mkdir -p \
+    "$APP_PATH/Contents/MacOS" \
+    "$APP_PATH/Contents/Frameworks" \
+    "$APP_PATH/Contents/Resources"
+cp "$EXECUTABLE_PATH" "$APP_PATH/Contents/MacOS/OpenClicky"
+
+# Keep dependency resources in the canonical signed app-bundle location.
+# SwiftPM also retains its build-path fallback for incremental development.
+for resourceBundle in "$BIN_PATH"/*.bundle(N); do
+    ditto "$resourceBundle" "$APP_PATH/Contents/Resources/${resourceBundle:t}"
+done
+for framework in "$BIN_PATH"/*.framework(N); do
+    ditto "$framework" "$APP_PATH/Contents/Frameworks/${framework:t}"
+done
+for dynamicLibrary in "$BIN_PATH"/*.dylib(N); do
+    cp "$dynamicLibrary" "$APP_PATH/Contents/Frameworks/${dynamicLibrary:t}"
+done
+
+BUILD_NUMBER="${OPENCLICKY_BUILD_NUMBER:-$(git rev-list --count HEAD)}"
+cat > "$APP_PATH/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleDisplayName</key><string>OpenClicky</string>
+    <key>CFBundleExecutable</key><string>OpenClicky</string>
+    <key>CFBundleIconFile</key><string>OpenClicky</string>
+    <key>CFBundleIdentifier</key><string>org.openclicky.app</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleName</key><string>OpenClicky</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>1.0-dev</string>
+    <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
+    <key>LSMinimumSystemVersion</key><string>14.2</string>
+    <key>LSUIElement</key><true/>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSHumanReadableCopyright</key><string>OpenClicky contributors</string>
+    <key>NSMicrophoneUsageDescription</key><string>OpenClicky uses your microphone only while you hold the voice shortcut.</string>
+    <key>NSScreenCaptureUsageDescription</key><string>OpenClicky captures your screen only when you invoke a voice or screenshot prompt.</string>
+    <key>NSSpeechRecognitionUsageDescription</key><string>OpenClicky uses Apple Speech to transcribe audio while you hold the voice shortcut.</string>
+    <key>VoiceTranscriptionProvider</key><string>parakeet</string>
+</dict>
+</plist>
+PLIST
+
+ICONSET_PATH="$PROJECT_ROOT/.build/OpenClicky.iconset"
+rm -rf "$ICONSET_PATH"
+mkdir -p "$ICONSET_PATH"
+cp "$ICON_SOURCE_PATH/16-mac.png" "$ICONSET_PATH/icon_16x16.png"
+cp "$ICON_SOURCE_PATH/32-mac.png" "$ICONSET_PATH/icon_16x16@2x.png"
+cp "$ICON_SOURCE_PATH/32-mac.png" "$ICONSET_PATH/icon_32x32.png"
+cp "$ICON_SOURCE_PATH/64-mac.png" "$ICONSET_PATH/icon_32x32@2x.png"
+cp "$ICON_SOURCE_PATH/128-mac.png" "$ICONSET_PATH/icon_128x128.png"
+cp "$ICON_SOURCE_PATH/256-mac.png" "$ICONSET_PATH/icon_128x128@2x.png"
+cp "$ICON_SOURCE_PATH/256-mac.png" "$ICONSET_PATH/icon_256x256.png"
+cp "$ICON_SOURCE_PATH/512-mac.png" "$ICONSET_PATH/icon_256x256@2x.png"
+cp "$ICON_SOURCE_PATH/512-mac.png" "$ICONSET_PATH/icon_512x512.png"
+cp "$ICON_SOURCE_PATH/1024-mac.png" "$ICONSET_PATH/icon_512x512@2x.png"
+iconutil --convert icns --output "$APP_PATH/Contents/Resources/OpenClicky.icns" "$ICONSET_PATH"
+rm -rf "$ICONSET_PATH"
+
+if [[ -n "${OPENCLICKY_SIGNING_IDENTITY:-}" ]]; then
+    SIGNING_IDENTITY="$OPENCLICKY_SIGNING_IDENTITY"
+else
+    SIGNING_IDENTITY="$(
+        security find-identity -v -p codesigning \
+            | grep -E '"(Apple Development|Developer ID Application):' \
+            | head -1 \
+            | sed -E 's/^[[:space:]]*[0-9]+\) [A-F0-9]+ "(.*)"$/\1/'
+    )"
+fi
+
+if [[ -z "$SIGNING_IDENTITY" ]]; then
+    echo "No code-signing identity for team $TEAM_IDENTIFIER was found." >&2
+    echo "Install an Apple Development certificate or set OPENCLICKY_SIGNING_IDENTITY." >&2
+    exit 1
+fi
+
+echo "Signing with $SIGNING_IDENTITY…"
+codesign \
+    --force \
+    --deep \
+    --options runtime \
+    --timestamp=none \
+    --sign "$SIGNING_IDENTITY" \
+    --entitlements "$ENTITLEMENTS_PATH" \
+    "$APP_PATH"
+codesign --verify --deep --strict "$APP_PATH"
+if [[ "$SIGNING_IDENTITY" != "-" ]]; then
+    SIGNING_DETAILS="$(codesign -dv --verbose=4 "$APP_PATH" 2>&1)"
+    if ! echo "$SIGNING_DETAILS" | grep -q "TeamIdentifier=$TEAM_IDENTIFIER"; then
+        echo "The signed app does not belong to expected team $TEAM_IDENTIFIER." >&2
+        exit 1
+    fi
+fi
+
+echo "Built $APP_PATH"

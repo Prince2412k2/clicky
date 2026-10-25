@@ -10,7 +10,6 @@
 import AVFoundation
 import Combine
 import Foundation
-import PostHog
 import ScreenCaptureKit
 import SwiftUI
 
@@ -24,15 +23,18 @@ enum CompanionVoiceState {
 @MainActor
 final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle
-    @Published private(set) var lastTranscript: String?
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
+    @Published private(set) var displayedResponseText = ""
+    @Published private(set) var interactionErrorMessage: String?
+    @Published private(set) var isGuidedSessionActive = false
+    @Published private(set) var isWaitingForGuidedAction = false
     @Published private(set) var hasAccessibilityPermission = false
     @Published private(set) var hasScreenRecordingPermission = false
     @Published private(set) var hasMicrophonePermission = false
     @Published private(set) var hasScreenContentPermission = false
 
     /// Screen location (global AppKit coords) of a detected UI element the
-    /// buddy should fly to and point at. Parsed from Claude's response;
+    /// buddy should fly to and point at. Parsed from the selected model's response;
     /// observed by BlueCursorView to trigger the flight animation.
     @Published var detectedElementScreenLocation: CGPoint?
     /// The display frame (global AppKit coords) of the screen the detected
@@ -41,47 +43,34 @@ final class CompanionManager: ObservableObject {
     /// Custom speech bubble text for the pointing animation. When set,
     /// BlueCursorView uses this instead of a random pointer phrase.
     @Published var detectedElementBubbleText: String?
-
-    // MARK: - Onboarding Video State (shared across all screen overlays)
-
-    @Published var onboardingVideoPlayer: AVPlayer?
-    @Published var showOnboardingVideo: Bool = false
-    @Published var onboardingVideoOpacity: Double = 0.0
-    private var onboardingVideoEndObserver: NSObjectProtocol?
-    private var onboardingDemoTimeObserver: Any?
-
-    // MARK: - Onboarding Prompt Bubble
-
-    /// Text streamed character-by-character on the cursor after the onboarding video ends.
-    @Published var onboardingPromptText: String = ""
-    @Published var onboardingPromptOpacity: Double = 0.0
-    @Published var showOnboardingPrompt: Bool = false
-
-    // MARK: - Onboarding Music
-
-    private var onboardingMusicPlayer: AVAudioPlayer?
-    private var onboardingMusicFadeTimer: Timer?
+    @Published private(set) var screenAnnotations: [ScreenAnnotation] = []
 
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
+    private lazy var screenshotPromptWindowManager = ScreenshotPromptWindowManager(
+        onSubmit: { [weak self] prompt, screenCapture in
+            self?.sendPromptWithScreenshot(
+                transcript: prompt,
+                suppliedScreenCaptures: [screenCapture],
+                interactionMode: .automatic
+            )
+        }
+    )
+    private let computerActionApprovalWindowManager = ComputerActionApprovalWindowManager()
+    private let semanticAutomationService = SemanticAutomationService()
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
-    /// Base URL for the Cloudflare Worker proxy. All API requests route
-    /// through this so keys never ship in the app binary.
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
+    let chatGPTAuthenticationManager = ChatGPTAuthenticationManager()
+    private lazy var openAIResponsesAPI = OpenAIResponsesAPI(
+        authenticationManager: chatGPTAuthenticationManager
+    )
+    private let directAIClient = OpenClickyDirectAIClient()
+    private let systemTTSClient = SystemTTSClient()
+    private let localKokoroTTSClient = LocalKokoroTTSClient()
 
-    private lazy var claudeAPI: ClaudeAPI = {
-        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
-    }()
-
-    private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
-        return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
-    }()
-
-    /// Conversation history so Claude remembers prior exchanges within a session.
-    /// Each entry is the user's transcript and Claude's response.
+    /// Conversation history so the selected model remembers prior exchanges within a session.
     private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
 
     /// The currently running AI response task, if any. Cancelled when the user
@@ -89,13 +78,21 @@ final class CompanionManager: ObservableObject {
     private var currentResponseTask: Task<Void, Never>?
 
     private var shortcutTransitionCancellable: AnyCancellable?
+    private var screenshotShortcutCancellable: AnyCancellable?
+    private var observedClickCancellable: AnyCancellable?
+    private var escapeKeyCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
-    /// Scheduled hide for transient cursor mode — cancelled if the user
-    /// speaks again before the delay elapses.
-    private var transientHideTask: Task<Void, Never>?
+    private var screenshotPromptPresentationTask: Task<Void, Never>?
+    private var annotationClearTask: Task<Void, Never>?
+    private var responseClearTask: Task<Void, Never>?
+    private var guidedAdvanceTask: Task<Void, Never>?
+    private var guidedSessionGoal = ""
+    private var guidedStepCount = 0
+    private var allowsClicksForGuidedSession = false
+    private var guidedSemanticFingerprint: Set<String>?
 
     /// True when all three required permissions (accessibility, screen recording,
     /// microphone) are granted. Used by the panel to show a single "all good" state.
@@ -103,181 +100,194 @@ final class CompanionManager: ObservableObject {
         hasAccessibilityPermission && hasScreenRecordingPermission && hasMicrophonePermission && hasScreenContentPermission
     }
 
+    var visualPromptPermissionsGranted: Bool {
+        hasAccessibilityPermission && hasScreenRecordingPermission && hasScreenContentPermission
+    }
+
     /// Whether the blue cursor overlay is currently visible on screen.
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
 
-    /// The Claude model used for voice responses. Persisted to UserDefaults.
-    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
+    @Published var selectedAIProvider = OpenClickyAIProvider(
+        rawValue: UserDefaults.standard.string(forKey: "selectedAIProvider") ?? ""
+    ) ?? .chatGPT
+    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedAIModel") ?? "gpt-5.2"
+    @Published var speechOutput = OpenClickySpeechOutput(
+        rawValue: UserDefaults.standard.string(forKey: "speechOutput") ?? ""
+    ) ?? .localKokoro
+    @Published private(set) var discoveredModels: [OpenAIModelOption] = []
+    @Published private(set) var providerErrorMessage: String?
+    private var discoveredModelsProvider: OpenClickyAIProvider?
+
+    var availableModelNames: [String] {
+        if discoveredModelsProvider == selectedAIProvider && !discoveredModels.isEmpty {
+            return discoveredModels.map(\.id)
+        }
+        return selectedAIProvider.suggestedModels
+    }
+
+    func setSelectedAIProvider(_ provider: OpenClickyAIProvider) {
+        selectedAIProvider = provider
+        discoveredModels = []
+        discoveredModelsProvider = nil
+        UserDefaults.standard.set(provider.rawValue, forKey: "selectedAIProvider")
+        let savedModel = UserDefaults.standard.string(forKey: "selectedAIModel.\(provider.rawValue)")
+        setSelectedModel(savedModel ?? provider.defaultModel)
+        providerErrorMessage = nil
+        if provider == .ollama
+            || (provider == .chatGPT && chatGPTAuthenticationManager.isSignedIn)
+            || (provider.requiresAPIKey && hasAPIKey(for: provider)) {
+            refreshAvailableModels()
+        }
+    }
 
     func setSelectedModel(_ model: String) {
         selectedModel = model
-        UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
-        claudeAPI.model = model
+        UserDefaults.standard.set(model, forKey: "selectedAIModel")
+        UserDefaults.standard.set(model, forKey: "selectedAIModel.\(selectedAIProvider.rawValue)")
     }
 
-    /// User preference for whether the Clicky cursor should be shown.
-    /// When toggled off, the overlay is hidden and push-to-talk is disabled.
-    /// Persisted to UserDefaults so the choice survives app restarts.
-    @Published var isClickyCursorEnabled: Bool = UserDefaults.standard.object(forKey: "isClickyCursorEnabled") == nil
-        ? true
-        : UserDefaults.standard.bool(forKey: "isClickyCursorEnabled")
+    func setSpeechOutput(_ output: OpenClickySpeechOutput) {
+        systemTTSClient.stopPlayback()
+        localKokoroTTSClient.stopPlayback()
+        speechOutput = output
+        UserDefaults.standard.set(output.rawValue, forKey: "speechOutput")
+    }
 
-    func setClickyCursorEnabled(_ enabled: Bool) {
-        isClickyCursorEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "isClickyCursorEnabled")
-        transientHideTask?.cancel()
-        transientHideTask = nil
+    func prepareLocalVoiceModel() {
+        Task {
+            do {
+                try await localKokoroTTSClient.prepareModel()
+                providerErrorMessage = nil
+            } catch {
+                providerErrorMessage = "Could not prepare Kokoro Local: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func prepareLocalTranscriptionModel() {
+        Task {
+            do {
+                try await LocalParakeetTranscriptionProvider().prepare()
+                providerErrorMessage = nil
+            } catch {
+                providerErrorMessage = "Could not prepare Parakeet Local: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func hasAPIKey(for provider: OpenClickyAIProvider) -> Bool {
+        OpenClickyCredentialStore.apiKey(for: provider) != nil
+    }
+
+    func saveAPIKey(_ apiKey: String, for provider: OpenClickyAIProvider) throws {
+        try OpenClickyCredentialStore.saveAPIKey(apiKey, for: provider)
+        providerErrorMessage = nil
+        if selectedAIProvider == provider {
+            refreshAvailableModels()
+        }
+    }
+
+    func removeAPIKey(for provider: OpenClickyAIProvider) {
+        OpenClickyCredentialStore.deleteAPIKey(for: provider)
+    }
+
+    func clearConversation() {
+        conversationHistory.removeAll()
+        displayedResponseText = ""
+        clearDetectedElementLocation()
+        clearScreenAnnotations()
+        stopGuidedSession()
+    }
+
+    func refreshAvailableModels() {
+        let provider = selectedAIProvider
+        Task {
+            do {
+                let models: [OpenAIModelOption]
+                if provider == .chatGPT {
+                    guard chatGPTAuthenticationManager.isSignedIn else { return }
+                    models = try await openAIResponsesAPI.listAvailableModels()
+                } else {
+                    models = try await directAIClient.listModels(
+                        provider: provider,
+                        apiKey: OpenClickyCredentialStore.apiKey(for: provider)
+                    )
+                }
+                guard selectedAIProvider == provider else { return }
+                discoveredModels = models
+                discoveredModelsProvider = provider
+                if !models.contains(where: { $0.id == selectedModel }), let firstModel = models.first {
+                    setSelectedModel(firstModel.id)
+                }
+            } catch {
+                providerErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    @Published var isOpenClickyEnabled: Bool = UserDefaults.standard.object(forKey: "isOpenClickyEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isOpenClickyEnabled")
+
+    func setOpenClickyEnabled(_ enabled: Bool) {
+        isOpenClickyEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isOpenClickyEnabled")
 
         if enabled {
-            overlayWindowManager.hasShownOverlayBefore = true
-            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
-            isOverlayVisible = true
+            refreshAllPermissions()
+            if visualPromptPermissionsGranted {
+                overlayWindowManager.hasShownOverlayBefore = true
+                overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+                isOverlayVisible = true
+            } else {
+                NotificationCenter.default.post(name: .openClickyShowPanel, object: nil)
+            }
         } else {
+            globalPushToTalkShortcutMonitor.stop()
+            buddyDictationManager.cancelCurrentDictation()
+            pendingKeyboardShortcutStartTask?.cancel()
+            currentResponseTask?.cancel()
+            currentResponseTask = nil
+            systemTTSClient.stopPlayback()
+            localKokoroTTSClient.stopPlayback()
+            LocalParakeetTranscriptionProvider.unloadModels()
+            clearScreenAnnotations()
+            displayedResponseText = ""
+            responseClearTask?.cancel()
+            stopGuidedSession()
             overlayWindowManager.hideOverlay()
             isOverlayVisible = false
         }
     }
 
-    /// Whether the user has completed onboarding at least once. Persisted
-    /// to UserDefaults so the Start button only appears on first launch.
-    var hasCompletedOnboarding: Bool {
-        get { UserDefaults.standard.bool(forKey: "hasCompletedOnboarding") }
-        set { UserDefaults.standard.set(newValue, forKey: "hasCompletedOnboarding") }
-    }
-
-    /// Whether the user has submitted their email during onboarding.
-    @Published var hasSubmittedEmail: Bool = UserDefaults.standard.bool(forKey: "hasSubmittedEmail")
-
-    /// Submits the user's email to FormSpark and identifies them in PostHog.
-    func submitEmail(_ email: String) {
-        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedEmail.isEmpty else { return }
-
-        hasSubmittedEmail = true
-        UserDefaults.standard.set(true, forKey: "hasSubmittedEmail")
-
-        // Identify user in PostHog
-        PostHogSDK.shared.identify(trimmedEmail, userProperties: [
-            "email": trimmedEmail
-        ])
-
-        // Submit to FormSpark
-        Task {
-            var request = URLRequest(url: URL(string: "https://submit-form.com/RWbGJxmIs")!)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try? JSONSerialization.data(withJSONObject: ["email": trimmedEmail])
-            _ = try? await URLSession.shared.data(for: request)
-        }
-    }
-
     func start() {
+        OpenClickyDiagnostics.record("companion.start", metadata: [
+            "enabled": isOpenClickyEnabled,
+            "provider": selectedAIProvider.rawValue,
+            "speech": speechOutput.rawValue
+        ])
         refreshAllPermissions()
-        print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
-        // Eagerly touch the Claude API so its TLS warmup handshake completes
-        // well before the onboarding demo fires at ~40s into the video.
-        _ = claudeAPI
+        bindScreenshotShortcut()
+        bindGuidedSessionEvents()
+        Task {
+            try? await Task.sleep(for: .seconds(1))
+            await buddyDictationManager.prepareSelectedTranscriptionProvider()
+        }
+        if selectedAIProvider == .ollama
+            || (selectedAIProvider == .chatGPT && chatGPTAuthenticationManager.isSignedIn)
+            || (selectedAIProvider.requiresAPIKey && hasAPIKey(for: selectedAIProvider)) {
+            refreshAvailableModels()
+        }
 
-        // If the user already completed onboarding AND all permissions are
-        // still granted, show the cursor overlay immediately. If permissions
-        // were revoked (e.g. signing change), don't show the cursor — the
-        // panel will show the permissions UI instead.
-        if hasCompletedOnboarding && allPermissionsGranted && isClickyCursorEnabled {
+        if visualPromptPermissionsGranted && isOpenClickyEnabled {
             overlayWindowManager.hasShownOverlayBefore = true
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
-        }
-    }
-
-    /// Called by BlueCursorView after the buddy finishes its pointing
-    /// animation and returns to cursor-following mode.
-    /// Triggers the onboarding sequence — dismisses the panel and restarts
-    /// the overlay so the welcome animation and intro video play.
-    func triggerOnboarding() {
-        // Post notification so the panel manager can dismiss the panel
-        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
-
-        // Mark onboarding as completed so the Start button won't appear
-        // again on future launches — the cursor will auto-show instead
-        hasCompletedOnboarding = true
-
-        ClickyAnalytics.trackOnboardingStarted()
-
-        // Play Besaid theme at 60% volume, fade out after 1m 30s
-        startOnboardingMusic()
-
-        // Show the overlay for the first time — isFirstAppearance triggers
-        // the welcome animation and onboarding video
-        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
-        isOverlayVisible = true
-    }
-
-    /// Replays the onboarding experience from the "Watch Onboarding Again"
-    /// footer link. Same flow as triggerOnboarding but the cursor overlay
-    /// is already visible so we just restart the welcome animation and video.
-    func replayOnboarding() {
-        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
-        ClickyAnalytics.trackOnboardingReplayed()
-        startOnboardingMusic()
-        // Tear down any existing overlays and recreate with isFirstAppearance = true
-        overlayWindowManager.hasShownOverlayBefore = false
-        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
-        isOverlayVisible = true
-    }
-
-    private func stopOnboardingMusic() {
-        onboardingMusicFadeTimer?.invalidate()
-        onboardingMusicFadeTimer = nil
-        onboardingMusicPlayer?.stop()
-        onboardingMusicPlayer = nil
-    }
-
-    private func startOnboardingMusic() {
-        stopOnboardingMusic()
-        guard let musicURL = Bundle.main.url(forResource: "ff", withExtension: "mp3") else {
-            print("⚠️ Clicky: ff.mp3 not found in bundle")
-            return
-        }
-
-        do {
-            let player = try AVAudioPlayer(contentsOf: musicURL)
-            player.volume = 0.3
-            player.play()
-            self.onboardingMusicPlayer = player
-
-            // After 1m 30s, fade the music out over 3s
-            onboardingMusicFadeTimer = Timer.scheduledTimer(withTimeInterval: 90.0, repeats: false) { [weak self] _ in
-                self?.fadeOutOnboardingMusic()
-            }
-        } catch {
-            print("⚠️ Clicky: Failed to play onboarding music: \(error)")
-        }
-    }
-
-    private func fadeOutOnboardingMusic() {
-        guard let player = onboardingMusicPlayer else { return }
-
-        let fadeSteps = 30
-        let fadeDuration: Double = 3.0
-        let stepInterval = fadeDuration / Double(fadeSteps)
-        let volumeDecrement = player.volume / Float(fadeSteps)
-        var stepsRemaining = fadeSteps
-
-        onboardingMusicFadeTimer = Timer.scheduledTimer(withTimeInterval: stepInterval, repeats: true) { [weak self] timer in
-            stepsRemaining -= 1
-            player.volume -= volumeDecrement
-
-            if stepsRemaining <= 0 {
-                timer.invalidate()
-                player.stop()
-                self?.onboardingMusicPlayer = nil
-                self?.onboardingMusicFadeTimer = nil
-            }
         }
     }
 
@@ -291,27 +301,30 @@ final class CompanionManager: ObservableObject {
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
-        transientHideTask?.cancel()
+        systemTTSClient.stopPlayback()
+        localKokoroTTSClient.unloadModels()
+        LocalParakeetTranscriptionProvider.unloadModels()
+        annotationClearTask?.cancel()
+        responseClearTask?.cancel()
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
         shortcutTransitionCancellable?.cancel()
+        screenshotShortcutCancellable?.cancel()
+        observedClickCancellable?.cancel()
+        escapeKeyCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
+        stopGuidedSession()
     }
 
     func refreshAllPermissions() {
-        let previouslyHadAccessibility = hasAccessibilityPermission
-        let previouslyHadScreenRecording = hasScreenRecordingPermission
-        let previouslyHadMicrophone = hasMicrophonePermission
-        let previouslyHadAll = allPermissionsGranted
-
         let currentlyHasAccessibility = WindowPositionManager.hasAccessibilityPermission()
         hasAccessibilityPermission = currentlyHasAccessibility
 
-        if currentlyHasAccessibility {
+        if currentlyHasAccessibility && isOpenClickyEnabled {
             globalPushToTalkShortcutMonitor.start()
         } else {
             globalPushToTalkShortcutMonitor.stop()
@@ -322,37 +335,17 @@ final class CompanionManager: ObservableObject {
         let micAuthStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         hasMicrophonePermission = micAuthStatus == .authorized
 
-        // Debug: log permission state on changes
-        if previouslyHadAccessibility != hasAccessibilityPermission
-            || previouslyHadScreenRecording != hasScreenRecordingPermission
-            || previouslyHadMicrophone != hasMicrophonePermission {
-            print("🔑 Permissions — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
-        }
-
-        // Track individual permission grants as they happen
-        if !previouslyHadAccessibility && hasAccessibilityPermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "accessibility")
-        }
-        if !previouslyHadScreenRecording && hasScreenRecordingPermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "screen_recording")
-        }
-        if !previouslyHadMicrophone && hasMicrophonePermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "microphone")
-        }
         // Screen content permission is persisted — once the user has approved the
         // SCShareableContent picker, we don't need to re-check it.
         if !hasScreenContentPermission {
             hasScreenContentPermission = UserDefaults.standard.bool(forKey: "hasScreenContentPermission")
         }
 
-        if !previouslyHadAll && allPermissionsGranted {
-            ClickyAnalytics.trackAllPermissionsGranted()
-        }
     }
 
     /// Triggers the macOS screen content picker by performing a dummy
     /// screenshot capture. Once the user approves, we persist the grant
-    /// so they're never asked again during onboarding.
+    /// so they're never asked again during setup.
     @Published private(set) var isRequestingScreenContent = false
 
     func requestScreenContentPermission() {
@@ -373,23 +366,18 @@ final class CompanionManager: ObservableObject {
                 // Verify the capture actually returned real content — a 0x0 or
                 // fully-empty image means the user denied the prompt.
                 let didCapture = image.width > 0 && image.height > 0
-                print("🔑 Screen content capture result — width: \(image.width), height: \(image.height), didCapture: \(didCapture)")
                 await MainActor.run {
                     isRequestingScreenContent = false
                     guard didCapture else { return }
                     hasScreenContentPermission = true
                     UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
-                    ClickyAnalytics.trackPermissionGranted(permission: "screen_content")
-
-                    // If onboarding was already completed, show the cursor overlay now
-                    if hasCompletedOnboarding && allPermissionsGranted && !isOverlayVisible && isClickyCursorEnabled {
+                    if visualPromptPermissionsGranted && !isOverlayVisible && isOpenClickyEnabled {
                         overlayWindowManager.hasShownOverlayBefore = true
                         overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                         isOverlayVisible = true
                     }
                 }
             } catch {
-                print("⚠️ Screen content permission request failed: \(error)")
                 await MainActor.run { isRequestingScreenContent = false }
             }
         }
@@ -448,15 +436,6 @@ final class CompanionManager: ObservableObject {
                     self.voiceState = .processing
                 } else {
                     self.voiceState = .idle
-                    // If the user pressed and released the hotkey without
-                    // saying anything, no response task runs — schedule the
-                    // transient hide here so the overlay doesn't get stuck.
-                    // Only do this when no response is in flight, otherwise
-                    // the brief idle gap between recording and processing
-                    // would prematurely hide the overlay.
-                    if self.currentResponseTask == nil {
-                        self.scheduleTransientHideIfNeeded()
-                    }
                 }
             }
     }
@@ -470,45 +449,143 @@ final class CompanionManager: ObservableObject {
             }
     }
 
+    private func bindScreenshotShortcut() {
+        screenshotShortcutCancellable = globalPushToTalkShortcutMonitor
+            .screenshotShortcutPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                self?.presentScreenshotPrompt()
+            }
+    }
+
+    private func bindGuidedSessionEvents() {
+        observedClickCancellable = globalPushToTalkShortcutMonitor
+            .observedInteractionPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] clickLocation in
+                self?.handleObservedClickDuringGuidedSession(clickLocation)
+            }
+        escapeKeyCancellable = globalPushToTalkShortcutMonitor
+            .escapeKeyPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                self?.screenshotPromptPresentationTask?.cancel()
+                self?.screenshotPromptPresentationTask = nil
+                self?.screenshotPromptWindowManager.close()
+                self?.stopGuidedSession()
+            }
+    }
+
+    private func handleObservedClickDuringGuidedSession(_ clickLocation: CGPoint) {
+        guard isOpenClickyEnabled,
+              isGuidedSessionActive,
+              isWaitingForGuidedAction,
+              !buddyDictationManager.isDictationInProgress,
+              !NSApp.isActive else { return }
+        guard !NSApp.windows.contains(where: { window in
+            window.isVisible && window.frame.contains(clickLocation)
+        }) else { return }
+
+        OpenClickyDiagnostics.record("guide.userInteractionObserved", metadata: [
+            "step": guidedStepCount
+        ])
+        scheduleGuidedSessionAdvanceAfterInteraction()
+    }
+
+    private func scheduleGuidedSessionAdvanceAfterInteraction() {
+        guard isOpenClickyEnabled,
+              isGuidedSessionActive,
+              isWaitingForGuidedAction else { return }
+        OpenClickyDiagnostics.record("guide.advanceScheduled", metadata: [
+            "approval": allowsClicksForGuidedSession,
+            "step": guidedStepCount
+        ])
+        displayedResponseText = ""
+        responseClearTask?.cancel()
+        guidedAdvanceTask?.cancel()
+        guidedAdvanceTask = Task {
+            try? await Task.sleep(for: .milliseconds(1200))
+            guard !Task.isCancelled else { return }
+            OpenClickyDiagnostics.record("guide.advanceCaptureStarting", metadata: [
+                "step": guidedStepCount
+            ])
+            isWaitingForGuidedAction = false
+            systemTTSClient.stopPlayback()
+            localKokoroTTSClient.stopPlayback()
+            clearScreenAnnotations()
+            do {
+                let screenCapture = try await CompanionScreenCaptureUtility.captureScreenContainingPointerAsJPEG()
+                let followUpPrompt = """
+                The user performed the highlighted action for this goal: \(guidedSessionGoal)
+                Inspect the new screenshot. Give only the next concrete step, or finish the walkthrough if the goal is complete.
+                """
+                sendPromptWithScreenshot(
+                    transcript: followUpPrompt,
+                    suppliedScreenCaptures: [screenCapture],
+                    isGuidedFollowUp: true,
+                    interactionMode: allowsClicksForGuidedSession ? .act : .guide
+                )
+            } catch {
+                OpenClickyDiagnostics.record("guide.advanceFailed", metadata: [
+                    "error": error.localizedDescription
+                ])
+                interactionErrorMessage = "Could not continue the walkthrough: \(error.localizedDescription)"
+                stopGuidedSession()
+            }
+        }
+    }
+
+    private func presentScreenshotPrompt() {
+        guard isOpenClickyEnabled else { return }
+        guard hasScreenRecordingPermission && hasScreenContentPermission else {
+            interactionErrorMessage = "Grant Screen Recording and Screen Content access to use screenshot prompts."
+            NotificationCenter.default.post(name: .openClickyShowPanel, object: nil)
+            return
+        }
+
+        interactionErrorMessage = nil
+        OpenClickyDiagnostics.record("launcher.captureStarting")
+        NotificationCenter.default.post(name: .openClickyDismissPanel, object: nil)
+        screenshotPromptPresentationTask?.cancel()
+        screenshotPromptPresentationTask = Task {
+            do {
+                let screenCapture = try await CompanionScreenCaptureUtility.captureScreenContainingPointerAsJPEG()
+                guard !Task.isCancelled else { return }
+                OpenClickyDiagnostics.record("launcher.presenting", metadata: [
+                    "model": selectedModel,
+                    "provider": selectedAIProvider.rawValue
+                ])
+                screenshotPromptWindowManager.show(
+                    screenCapture: screenCapture,
+                    providerName: selectedAIProvider.displayName,
+                    modelName: selectedModel
+                )
+            } catch {
+                guard !Task.isCancelled else { return }
+                OpenClickyDiagnostics.record("launcher.captureFailed", metadata: [
+                    "error": error.localizedDescription
+                ])
+                let message = "Could not capture the current display: \(error.localizedDescription)"
+                interactionErrorMessage = message
+                displayedResponseText = message
+            }
+        }
+    }
+
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
         case .pressed:
+            guard isOpenClickyEnabled else { return }
             guard !buddyDictationManager.isDictationInProgress else { return }
-            // Don't register push-to-talk while the onboarding video is playing
-            guard !showOnboardingVideo else { return }
-
-            // Cancel any pending transient hide so the overlay stays visible
-            transientHideTask?.cancel()
-            transientHideTask = nil
-
-            // If the cursor is hidden, bring it back transiently for this interaction
-            if !isClickyCursorEnabled && !isOverlayVisible {
-                overlayWindowManager.hasShownOverlayBefore = true
-                overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
-                isOverlayVisible = true
-            }
 
             // Dismiss the menu bar panel so it doesn't cover the screen
-            NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+            NotificationCenter.default.post(name: .openClickyDismissPanel, object: nil)
 
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
-            elevenLabsTTSClient.stopPlayback()
+            systemTTSClient.stopPlayback()
+            localKokoroTTSClient.stopPlayback()
             clearDetectedElementLocation()
-
-            // Dismiss the onboarding prompt if it's showing
-            if showOnboardingPrompt {
-                withAnimation(.easeOut(duration: 0.3)) {
-                    onboardingPromptOpacity = 0.0
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    self.showOnboardingPrompt = false
-                    self.onboardingPromptText = ""
-                }
-            }
-    
-
-            ClickyAnalytics.trackPushToTalkStarted()
 
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = Task {
@@ -518,10 +595,10 @@ final class CompanionManager: ObservableObject {
                         // Partial transcripts are hidden (waveform-only UI)
                     },
                     submitDraftText: { [weak self] finalTranscript in
-                        self?.lastTranscript = finalTranscript
-                        print("🗣️ Companion received transcript: \(finalTranscript)")
-                        ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
-                        self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                        self?.sendPromptWithScreenshot(
+                            transcript: finalTranscript,
+                            interactionMode: .automatic
+                        )
                     }
                 )
             }
@@ -530,7 +607,6 @@ final class CompanionManager: ObservableObject {
             // before the async startPushToTalk had a chance to begin recording.
             // Without this, a quick press-and-release drops the release event and
             // leaves the waveform overlay stuck on screen indefinitely.
-            ClickyAnalytics.trackPushToTalkReleased()
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
@@ -541,21 +617,15 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Companion Prompt
 
-    private static let companionVoiceResponseSystemPrompt = """
-    you're clicky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
+    private static let companionResponseSystemPrompt = """
+    You are OpenClicky, a privacy-first companion that lives in the user's macOS menu bar. The user asked for help and explicitly shared one or more screenshots with this request. This is an ongoing conversation, so use the supplied conversation history when relevant.
 
     rules:
-    - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
-    - all lowercase, casual, warm. no emojis.
-    - write for the ear, not the eye. short sentences. no lists, bullet points, markdown, or formatting — just natural speech.
-    - don't use abbreviations or symbols that sound weird read aloud. write "for example" not "e.g.", spell out small numbers.
+    - Default to a concise, direct answer. Expand when the user asks for depth.
+    - Be warm and precise. Do not add filler or unnecessary follow-up questions.
     - if the user's question relates to what's on their screen, reference specific things you see.
     - if the screenshot doesn't seem relevant to their question, just answer the question directly.
     - you can help with anything — coding, writing, general knowledge, brainstorming.
-    - never say "simply" or "just".
-    - don't read out code verbatim. describe what the code does or what needs to change conversationally.
-    - focus on giving a thorough, useful explanation. don't end with simple yes/no questions like "want me to explain more?" or "should i show you?" — those are dead ends that force the user to just say yes.
-    - instead, when it fits naturally, end by planting a seed — mention something bigger or more ambitious they could try, a related concept that goes deeper, or a next-level technique that builds on what you just explained. make it something worth coming back for, not a question they'd just nod to. it's okay to not end with anything extra if the answer is complete on its own.
     - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
 
     element pointing:
@@ -569,6 +639,23 @@ final class CompanionManager: ObservableObject {
 
     if pointing wouldn't help, append [POINT:none].
 
+    teaching annotations:
+    when visual guidance would help, draw directly over the shared screenshot with up to four DRAW tags. put every tag at the very end of the response after the POINT tag. coordinates use the screenshot's top-left pixel origin.
+
+    available tags:
+    - [DRAW:arrow:startX,startY,endX,endY:short label] draws an arrow toward a target.
+    - [DRAW:box:x,y,width,height:short label] outlines a UI region.
+    - [DRAW:highlight:x,y,width,height:short label] softly highlights a region.
+    - [DRAW:pointer:x,y:short label] places a pulsing pointer.
+
+    use annotations to teach multi-step spatial ideas, compare areas, or make a target unmistakable. keep labels to one through four words. do not draw when the question is unrelated to the screenshot. never invent coordinates outside the supplied image dimensions.
+
+    guided walkthroughs:
+    when the user asks how to complete a task in the visible app, act as a live guide. give exactly one actionable step at a time, draw the target, and append [GUIDE:continue]. after the user acts, you will receive a new screenshot and must inspect what actually changed before giving the next step. never repeat a completed step. when the goal is visibly complete, append [GUIDE:done]. for ordinary questions that do not need a walkthrough, do not add a GUIDE tag.
+
+    approved computer actions:
+    only when the user explicitly asks you to click, act, perform the steps, or do the task for them, you may request one click. prefer a semantic element from the Accessibility snapshot with [ACTION:element:elementID:short description]. only when no matching semantic element exists, use [ACTION:click:x,y:short description]. the user must approve it in OpenClicky before anything happens. request only one click per response and combine it with [GUIDE:continue] when more steps remain. never request a click for purchases, account deletion, permission dialogs, passwords, authentication, financial actions, sending messages, or any other consequential action. for those, guide the user and let them click.
+
     examples:
     - user asks how to color grade in final cut: "you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector]"
     - user asks what html is: "html stands for hypertext markup language, it's basically the skeleton of every web page. curious how it connects to the css you're looking at? [POINT:none]"
@@ -578,24 +665,57 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - AI Response Pipeline
 
-    /// Captures a screenshot, sends it along with the transcript to Claude,
-    /// and plays the response aloud via ElevenLabs TTS. The cursor stays in
-    /// the spinner/processing state until TTS audio begins playing.
-    /// Claude's response may include a [POINT:x,y:label] tag which triggers
-    /// the buddy to fly to that element on screen.
-    private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
+    /// Captures a screenshot, sends it to the selected provider, and optionally
+    /// speaks the response through macOS. A [POINT:x,y:label] tag makes the
+    /// buddy fly to the referenced element.
+    private func sendPromptWithScreenshot(
+        transcript: String,
+        suppliedScreenCaptures: [CompanionScreenCapture]? = nil,
+        isGuidedFollowUp: Bool = false,
+        interactionMode: OpenClickyInteractionMode = .automatic
+    ) {
+        OpenClickyDiagnostics.record("response.started", metadata: [
+            "followUp": isGuidedFollowUp,
+            "mode": interactionMode.rawValue,
+            "suppliedCaptures": suppliedScreenCaptures?.count ?? 0
+        ])
+        if !isGuidedFollowUp {
+            stopGuidedSession(clearAnnotations: false)
+        }
         currentResponseTask?.cancel()
-        elevenLabsTTSClient.stopPlayback()
+        systemTTSClient.stopPlayback()
+        localKokoroTTSClient.stopPlayback()
+        clearScreenAnnotations()
+        responseClearTask?.cancel()
+        responseClearTask = nil
 
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
             voiceState = .processing
+            displayedResponseText = ""
 
             do {
-                // Capture all connected screens so the AI has full context
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                let screenCaptures: [CompanionScreenCapture]
+                if let suppliedScreenCaptures {
+                    screenCaptures = suppliedScreenCaptures
+                } else {
+                    screenCaptures = [try await CompanionScreenCaptureUtility.captureScreenContainingPointerAsJPEG()]
+                }
 
                 guard !Task.isCancelled else { return }
+
+                let semanticSnapshot: OpenClickySemanticSnapshot?
+                do {
+                    semanticSnapshot = try await semanticAutomationService.captureFrontmostSnapshot()
+                    OpenClickyDiagnostics.record("semanticSnapshot.complete", metadata: [
+                        "elements": semanticSnapshot?.elementsByID.count ?? 0
+                    ])
+                } catch {
+                    semanticSnapshot = nil
+                    OpenClickyDiagnostics.record("semanticSnapshot.failed", metadata: [
+                        "error": error.localizedDescription
+                    ])
+                }
 
                 // Build image labels with the actual screenshot pixel dimensions
                 // so Claude's coordinate space matches the image it sees. We
@@ -610,21 +730,73 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
-                    conversationHistory: historyForAPI,
-                    userPrompt: transcript,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
+                let fullResponseText: String
+                let outputGuidance = speechOutput != .textOnly
+                    ? "The response will be spoken aloud. Use short, natural sentences and avoid markdown or code dumps."
+                    : "The response will be read on screen. Use clear formatting when it improves readability."
+                let modeGuidance: String
+                switch interactionMode {
+                case .automatic:
+                    modeGuidance = "AUTOMATIC MODE: Infer the user's intent yourself. Answer ordinary questions directly. For how-to requests, give exactly one visible step and continue with GUIDE tags. Request a safe approved ACTION only when the user explicitly asks you to operate the Mac."
+                case .ask:
+                    modeGuidance = "ASK MODE: Answer the request. Do not request computer actions."
+                case .guide:
+                    modeGuidance = "GUIDE MODE: Give exactly one visible next step, draw its target, and continue the walkthrough until complete."
+                case .act:
+                    modeGuidance = "ACT MODE: The user explicitly asked you to operate the Mac. If a safe visible click advances the task, you MUST request it with ACTION:click instead of merely describing it. Request one action per turn and continue until complete."
+                }
+                let systemPrompt = Self.companionResponseSystemPrompt
+                    + "\n\n" + outputGuidance
+                    + "\n\n" + modeGuidance
+                var effectiveUserPrompt = transcript
+                if let semanticSnapshot {
+                    effectiveUserPrompt += "\n\n" + semanticSnapshot.compactDescription
+                    if isGuidedFollowUp, let previousFingerprint = guidedSemanticFingerprint {
+                        let changed = semanticSnapshot.stateFingerprint != previousFingerprint
+                        effectiveUserPrompt += changed
+                            ? "\n\nThe accessible UI state changed after the previous step."
+                            : "\n\nThe accessible UI state did not change after the previous step. The user may have clicked the wrong target or the app may still be loading; inspect the screenshot and correct the guidance."
                     }
-                )
+                }
+                if selectedAIProvider == .chatGPT {
+                    let response = try await openAIResponsesAPI.analyzeImageStreaming(
+                        images: labeledImages,
+                        model: selectedModel,
+                        systemPrompt: systemPrompt,
+                        conversationHistory: historyForAPI,
+                        userPrompt: effectiveUserPrompt,
+                        onTextChunk: { _ in }
+                    )
+                    fullResponseText = response.text
+                } else {
+                    fullResponseText = try await directAIClient.respond(
+                        provider: selectedAIProvider,
+                        model: selectedModel,
+                        apiKey: OpenClickyCredentialStore.apiKey(for: selectedAIProvider),
+                        images: labeledImages,
+                        systemPrompt: systemPrompt,
+                        conversationHistory: historyForAPI,
+                        userPrompt: effectiveUserPrompt
+                    )
+                }
 
                 guard !Task.isCancelled else { return }
 
-                // Parse the [POINT:...] tag from Claude's response
-                let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
+                // Parse the provider-independent [POINT:...] tag.
+                let computerActionParseResult = ComputerActionParser.parse(from: fullResponseText)
+                let guidedParseResult = GuidedSessionParser.parse(from: computerActionParseResult.responseText)
+                let annotationParseResult = ScreenAnnotationParser.parse(from: guidedParseResult.responseText)
+                let parseResult = Self.parsePointingCoordinates(from: annotationParseResult.responseText)
                 let spokenText = parseResult.spokenText
+                OpenClickyDiagnostics.record("response.parsed", metadata: [
+                    "action": computerActionParseResult.clickAction?.elementID == nil
+                        ? (computerActionParseResult.clickAction == nil ? "none" : "coordinate")
+                        : "semantic",
+                    "annotations": annotationParseResult.annotations.count,
+                    "guideDirective": guidedParseResult.directive?.rawValue ?? "none",
+                    "point": parseResult.coordinate == nil ? "none" : "present"
+                ])
+                displayedResponseText = spokenText
 
                 // Handle element pointing if Claude returned coordinates.
                 // Switch to idle BEFORE setting the location so the triangle
@@ -645,40 +817,62 @@ final class CompanionManager: ObservableObject {
                     return screenCaptures.first(where: { $0.isCursorScreen })
                 }()
 
+                if let targetScreenCapture {
+                    screenAnnotations = annotationParseResult.annotations.compactMap { parsedAnnotation in
+                        Self.makeScreenAnnotation(
+                            from: parsedAnnotation,
+                            screenCapture: targetScreenCapture
+                        )
+                    }
+                    if screenAnnotations.isEmpty,
+                       let pointCoordinate = parseResult.coordinate {
+                        screenAnnotations = [Self.makePointerAnnotation(
+                            pointCoordinate: pointCoordinate,
+                            label: parseResult.elementLabel,
+                            screenCapture: targetScreenCapture
+                        )]
+                    }
+                    scheduleAnnotationClearIfNeeded()
+                }
+
+                let resolvedDirective = resolvedGuidedDirective(
+                    explicitDirective: guidedParseResult.directive,
+                    prompt: transcript,
+                    isGuidedFollowUp: isGuidedFollowUp,
+                    interactionMode: interactionMode,
+                    hasVisualTarget: !screenAnnotations.isEmpty
+                        || parseResult.coordinate != nil
+                        || computerActionParseResult.clickAction != nil
+                )
+                updateGuidedSession(
+                    directive: GuidedSessionPolicy.directiveBeforeActionVerification(
+                        modelDirective: resolvedDirective,
+                        hasPendingAction: computerActionParseResult.clickAction != nil
+                    ),
+                    originalPrompt: transcript,
+                    isGuidedFollowUp: isGuidedFollowUp
+                )
+                if let clickAction = computerActionParseResult.clickAction,
+                   let targetScreenCapture {
+                    requestComputerClickApproval(
+                        clickAction,
+                        screenCapture: targetScreenCapture,
+                        semanticSnapshot: semanticSnapshot
+                    )
+                }
+                if isGuidedSessionActive {
+                    guidedSemanticFingerprint = semanticSnapshot?.stateFingerprint
+                }
+
                 if let pointCoordinate = parseResult.coordinate,
                    let targetScreenCapture {
-                    // Claude's coordinates are in the screenshot's pixel space
-                    // (top-left origin, e.g. 1280x831). Scale to the display's
-                    // point space (e.g. 1512x982), then convert to AppKit global coords.
-                    let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
-                    let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
-                    let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
-                    let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
-                    let displayFrame = targetScreenCapture.displayFrame
-
-                    // Clamp to screenshot coordinate space
-                    let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                    let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-
-                    // Scale from screenshot pixels to display points
-                    let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-                    let displayLocalY = clampedY * (displayHeight / screenshotHeight)
-
-                    // Convert from top-left origin (screenshot) to bottom-left origin (AppKit)
-                    let appKitY = displayHeight - displayLocalY
-
-                    // Convert display-local coords to global screen coords
-                    let globalLocation = CGPoint(
-                        x: displayLocalX + displayFrame.origin.x,
-                        y: appKitY + displayFrame.origin.y
+                    let globalLocation = Self.convertScreenshotPointToGlobalAppKit(
+                        pointCoordinate,
+                        screenCapture: targetScreenCapture
                     )
 
                     detectedElementScreenLocation = globalLocation
-                    detectedElementDisplayFrame = displayFrame
-                    ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
-                    print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
-                } else {
-                    print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
+                    detectedElementDisplayFrame = targetScreenCapture.displayFrame
                 }
 
                 // Save this exchange to conversation history (with the point tag
@@ -693,85 +887,358 @@ final class CompanionManager: ObservableObject {
                     conversationHistory.removeFirst(conversationHistory.count - 10)
                 }
 
-                print("🧠 Conversation history: \(conversationHistory.count) exchanges")
 
-                ClickyAnalytics.trackAIResponseReceived(response: spokenText)
-
-                // Play the response via TTS. Keep the spinner (processing state)
-                // until the audio actually starts playing, then switch to responding.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    do {
-                        try await elevenLabsTTSClient.speakText(spokenText)
-                        // speakText returns after player.play() — audio is now playing
+                    switch speechOutput {
+                    case .macVoice:
+                        systemTTSClient.speakText(spokenText)
                         voiceState = .responding
-                    } catch {
-                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ ElevenLabs TTS error: \(error)")
-                        speakCreditsErrorFallback()
+                    case .localKokoro:
+                        do {
+                            try await localKokoroTTSClient.speakText(spokenText)
+                            providerErrorMessage = nil
+                            voiceState = .responding
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch {
+                            localKokoroTTSClient.stopPlayback()
+                            providerErrorMessage = "Local voice unavailable; using Mac Voice. \(error.localizedDescription)"
+                            systemTTSClient.speakText(spokenText)
+                            voiceState = .responding
+                        }
+                    case .textOnly:
+                        break
                     }
                 }
+                scheduleResponseTextClear()
             } catch is CancellationError {
                 // User spoke again — response was interrupted
+                OpenClickyDiagnostics.record("response.cancelled")
             } catch {
-                ClickyAnalytics.trackResponseError(error: error.localizedDescription)
-                print("⚠️ Companion response error: \(error)")
-                speakCreditsErrorFallback()
+                OpenClickyDiagnostics.record("response.failed", metadata: [
+                    "error": error.localizedDescription,
+                    "followUp": isGuidedFollowUp
+                ])
+                showResponseError(error.localizedDescription)
             }
 
             if !Task.isCancelled {
                 voiceState = .idle
-                scheduleTransientHideIfNeeded()
             }
         }
     }
 
-    /// If the cursor is in transient mode (user toggled "Show Clicky" off),
-    /// waits for TTS playback and any pointing animation to finish, then
-    /// fades out the overlay after a 1-second pause. Cancelled automatically
-    /// if the user starts another push-to-talk interaction.
-    private func scheduleTransientHideIfNeeded() {
-        guard !isClickyCursorEnabled && isOverlayVisible else { return }
+    private func showResponseError(_ details: String) {
+        providerErrorMessage = details
+        displayedResponseText = "OpenClicky could not complete that request. Check your provider settings and try again."
+        if speechOutput != .textOnly {
+            systemTTSClient.speakText(displayedResponseText)
+            voiceState = .responding
+        }
+        scheduleResponseTextClear()
+    }
 
-        transientHideTask?.cancel()
-        transientHideTask = Task {
-            // Wait for TTS audio to finish playing
-            while elevenLabsTTSClient.isPlaying {
-                try? await Task.sleep(nanoseconds: 200_000_000)
+    private func scheduleResponseTextClear() {
+        responseClearTask?.cancel()
+        responseClearTask = Task {
+            while systemTTSClient.isPlaying || localKokoroTTSClient.isPlaying {
+                try? await Task.sleep(for: .milliseconds(200))
                 guard !Task.isCancelled else { return }
             }
-
-            // Wait for pointing animation to finish (location is cleared
-            // when the buddy flies back to the cursor)
-            while detectedElementScreenLocation != nil {
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                guard !Task.isCancelled else { return }
-            }
-
-            // Pause 1s after everything finishes, then fade out
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            let delay: Duration = speechOutput == .textOnly ? .seconds(10) : .seconds(4)
+            try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
-            overlayWindowManager.fadeOutAndHideOverlay()
-            isOverlayVisible = false
+            displayedResponseText = ""
         }
     }
 
-    /// Speaks a hardcoded error message using macOS system TTS when API
-    /// credits run out. Uses NSSpeechSynthesizer so it works even when
-    /// ElevenLabs is down.
-    private func speakCreditsErrorFallback() {
-        let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
-        voiceState = .responding
+    private func resolvedGuidedDirective(
+        explicitDirective: GuidedSessionDirective?,
+        prompt: String,
+        isGuidedFollowUp: Bool,
+        interactionMode: OpenClickyInteractionMode,
+        hasVisualTarget: Bool
+    ) -> GuidedSessionDirective? {
+        if let explicitDirective { return explicitDirective }
+        guard hasVisualTarget else { return isGuidedFollowUp ? .done : nil }
+        if isGuidedFollowUp { return .continueGuiding }
+        if interactionMode == .guide || interactionMode == .act { return .continueGuiding }
+
+        let normalizedPrompt = prompt.lowercased()
+        let walkthroughPhrases = [
+            "how do i",
+            "how can i",
+            "show me how",
+            "walk me through",
+            "guide me",
+            "teach me",
+            "help me set up"
+        ]
+        return walkthroughPhrases.contains(where: normalizedPrompt.contains)
+            ? .continueGuiding
+            : nil
+    }
+
+    func clearScreenAnnotations() {
+        annotationClearTask?.cancel()
+        annotationClearTask = nil
+        screenAnnotations = []
+    }
+
+    func stopGuidedSession(clearAnnotations: Bool = true) {
+        if isGuidedSessionActive || isWaitingForGuidedAction || allowsClicksForGuidedSession {
+            OpenClickyDiagnostics.record("guide.stopped", metadata: [
+                "approvalWasActive": allowsClicksForGuidedSession,
+                "clearAnnotations": clearAnnotations,
+                "step": guidedStepCount,
+                "waiting": isWaitingForGuidedAction
+            ])
+        }
+        guidedAdvanceTask?.cancel()
+        guidedAdvanceTask = nil
+        isGuidedSessionActive = false
+        isWaitingForGuidedAction = false
+        guidedSessionGoal = ""
+        guidedStepCount = 0
+        guidedSemanticFingerprint = nil
+        allowsClicksForGuidedSession = false
+        computerActionApprovalWindowManager.close()
+        if clearAnnotations {
+            clearScreenAnnotations()
+        }
+    }
+
+    private func requestComputerClickApproval(
+        _ clickAction: ParsedComputerClickAction,
+        screenCapture: CompanionScreenCapture,
+        semanticSnapshot: OpenClickySemanticSnapshot?
+    ) {
+        guard hasAccessibilityPermission else {
+            interactionErrorMessage = "Accessibility permission is required before OpenClicky can perform an approved click."
+            NotificationCenter.default.post(name: .openClickyShowPanel, object: nil)
+            return
+        }
+        let semanticElement = clickAction.elementID.flatMap { semanticSnapshot?.elementsByID[$0] }
+        let fallbackScreenshotLocation = clickAction.screenshotLocation ?? CGPoint(
+            x: CGFloat(screenCapture.screenshotWidthInPixels) / 2,
+            y: CGFloat(screenCapture.screenshotHeightInPixels) / 2
+        )
+        let pendingAction = PendingComputerClickAction(
+            appKitLocation: semanticElement.map { element in
+                CGPoint(
+                    x: element.bounds.midX,
+                    y: (NSScreen.screens.first?.frame.maxY ?? 0) - element.bounds.midY
+                )
+            } ?? Self.convertScreenshotPointToGlobalAppKit(
+                fallbackScreenshotLocation,
+                screenCapture: screenCapture
+            ),
+            semanticElementID: semanticElement?.id,
+            semanticSnapshotID: semanticElement == nil ? nil : semanticSnapshot?.snapshotID,
+            label: clickAction.label,
+            targetApplication: NSWorkspace.shared.frontmostApplication
+        )
+
+        OpenClickyDiagnostics.record("action.requested", metadata: [
+            "approvalActive": allowsClicksForGuidedSession,
+            "guided": isGuidedSessionActive,
+            "target": semanticElement == nil ? "coordinate" : "semantic"
+        ])
+
+        if isGuidedSessionActive && allowsClicksForGuidedSession {
+            OpenClickyDiagnostics.record("action.autoApproved", metadata: [
+                "step": guidedStepCount
+            ])
+            performApprovedComputerClick(pendingAction)
+            return
+        }
+
+        computerActionApprovalWindowManager.show(
+            action: pendingAction,
+            allowsWalkthroughApproval: isGuidedSessionActive,
+            onAllowOnce: { [weak self] in
+                OpenClickyDiagnostics.record("action.allowedOnce")
+                self?.computerActionApprovalWindowManager.close()
+                self?.performApprovedComputerClick(pendingAction)
+            },
+            onAllowWalkthrough: { [weak self] in
+                guard let self else { return }
+                OpenClickyDiagnostics.record("action.allowedWalkthrough", metadata: [
+                    "step": self.guidedStepCount
+                ])
+                self.computerActionApprovalWindowManager.close()
+                self.allowsClicksForGuidedSession = true
+                self.performApprovedComputerClick(pendingAction)
+            },
+            onCancel: { [weak self] in
+                OpenClickyDiagnostics.record("action.cancelled")
+                self?.computerActionApprovalWindowManager.close()
+                self?.stopGuidedSession()
+            }
+        )
+    }
+
+    private func performApprovedComputerClick(_ pendingAction: PendingComputerClickAction) {
+        OpenClickyDiagnostics.record("action.executionStarting", metadata: [
+            "approvalActive": allowsClicksForGuidedSession,
+            "target": pendingAction.semanticElementID == nil ? "coordinate" : "semantic"
+        ])
+        detectedElementScreenLocation = pendingAction.appKitLocation
+        detectedElementDisplayFrame = NSScreen.screens.first(where: {
+            $0.frame.contains(pendingAction.appKitLocation)
+        })?.frame
+        detectedElementBubbleText = pendingAction.label
+
+        Task {
+            do {
+                if let elementID = pendingAction.semanticElementID,
+                   let snapshotID = pendingAction.semanticSnapshotID {
+                    try await semanticAutomationService.clickElement(
+                        elementID: elementID,
+                        snapshotID: snapshotID
+                    )
+                } else {
+                    try await ComputerClickExecutor.perform(pendingAction)
+                }
+                OpenClickyDiagnostics.record("action.executionSucceeded", metadata: [
+                    "approvalActive": allowsClicksForGuidedSession,
+                    "target": pendingAction.semanticElementID == nil ? "coordinate" : "semantic"
+                ])
+                scheduleGuidedSessionAdvanceAfterInteraction()
+            } catch {
+                OpenClickyDiagnostics.record("action.executionFailed", metadata: [
+                    "error": error.localizedDescription,
+                    "target": pendingAction.semanticElementID == nil ? "coordinate" : "semantic"
+                ])
+                interactionErrorMessage = "Could not perform the approved click: \(error.localizedDescription)"
+                stopGuidedSession()
+            }
+        }
+    }
+
+    private func updateGuidedSession(
+        directive: GuidedSessionDirective?,
+        originalPrompt: String,
+        isGuidedFollowUp: Bool
+    ) {
+        OpenClickyDiagnostics.record("guide.directiveResolved", metadata: [
+            "approval": allowsClicksForGuidedSession,
+            "directive": directive?.rawValue ?? "none",
+            "followUp": isGuidedFollowUp,
+            "stepBeforeUpdate": guidedStepCount
+        ])
+        switch directive {
+        case .continueGuiding:
+            annotationClearTask?.cancel()
+            annotationClearTask = nil
+            if !isGuidedFollowUp {
+                guidedSessionGoal = originalPrompt
+                guidedStepCount = 0
+            }
+            guidedStepCount += 1
+            guard guidedStepCount <= 15 else {
+                interactionErrorMessage = "The walkthrough stopped after 15 steps. Start it again if you want to continue."
+                stopGuidedSession(clearAnnotations: false)
+                return
+            }
+            isGuidedSessionActive = true
+            isWaitingForGuidedAction = true
+        case .done:
+            stopGuidedSession(clearAnnotations: false)
+        case nil:
+            if isGuidedFollowUp {
+                stopGuidedSession(clearAnnotations: false)
+            }
+        }
+    }
+
+    private func scheduleAnnotationClearIfNeeded() {
+        annotationClearTask?.cancel()
+        guard !screenAnnotations.isEmpty else { return }
+        annotationClearTask = Task {
+            try? await Task.sleep(for: .seconds(20))
+            guard !Task.isCancelled else { return }
+            screenAnnotations = []
+        }
+    }
+
+    static func makeScreenAnnotation(
+        from parsedAnnotation: ParsedScreenAnnotation,
+        screenCapture: CompanionScreenCapture
+    ) -> ScreenAnnotation? {
+        let coordinates = parsedAnnotation.coordinates
+        guard coordinates.count == (parsedAnnotation.kind == .pointer ? 2 : 4) else { return nil }
+
+        let startPixelLocation = CGPoint(x: coordinates[0], y: coordinates[1])
+        let endPixelLocation: CGPoint
+        switch parsedAnnotation.kind {
+        case .arrow:
+            endPixelLocation = CGPoint(x: coordinates[2], y: coordinates[3])
+        case .box, .highlight:
+            endPixelLocation = CGPoint(
+                x: coordinates[0] + max(coordinates[2], 1),
+                y: coordinates[1] + max(coordinates[3], 1)
+            )
+        case .pointer:
+            endPixelLocation = startPixelLocation
+        }
+
+        return ScreenAnnotation(
+            kind: parsedAnnotation.kind,
+            startLocation: convertScreenshotPointToGlobalAppKit(
+                startPixelLocation,
+                screenCapture: screenCapture
+            ),
+            endLocation: convertScreenshotPointToGlobalAppKit(
+                endPixelLocation,
+                screenCapture: screenCapture
+            ),
+            label: parsedAnnotation.label,
+            displayFrame: screenCapture.displayFrame
+        )
+    }
+
+    private static func makePointerAnnotation(
+        pointCoordinate: CGPoint,
+        label: String?,
+        screenCapture: CompanionScreenCapture
+    ) -> ScreenAnnotation {
+        let globalLocation = convertScreenshotPointToGlobalAppKit(
+            pointCoordinate,
+            screenCapture: screenCapture
+        )
+        return ScreenAnnotation(
+            kind: .pointer,
+            startLocation: globalLocation,
+            endLocation: globalLocation,
+            label: label == "none" ? nil : label,
+            displayFrame: screenCapture.displayFrame
+        )
+    }
+
+    static func convertScreenshotPointToGlobalAppKit(
+        _ screenshotPoint: CGPoint,
+        screenCapture: CompanionScreenCapture
+    ) -> CGPoint {
+        let screenshotWidth = max(CGFloat(screenCapture.screenshotWidthInPixels), 1)
+        let screenshotHeight = max(CGFloat(screenCapture.screenshotHeightInPixels), 1)
+        let clampedX = max(0, min(screenshotPoint.x, screenshotWidth))
+        let clampedY = max(0, min(screenshotPoint.y, screenshotHeight))
+        let localX = clampedX * (CGFloat(screenCapture.displayWidthInPoints) / screenshotWidth)
+        let localYFromTop = clampedY * (CGFloat(screenCapture.displayHeightInPoints) / screenshotHeight)
+        return CGPoint(
+            x: screenCapture.displayFrame.minX + localX,
+            y: screenCapture.displayFrame.minY + CGFloat(screenCapture.displayHeightInPoints) - localYFromTop
+        )
     }
 
     // MARK: - Point Tag Parsing
 
-    /// Result of parsing a [POINT:...] tag from Claude's response.
+    /// Result of parsing a [POINT:...] tag from a model response.
     struct PointingParseResult {
         /// The response text with the [POINT:...] tag removed — this is what gets spoken.
         let spokenText: String
-        /// The parsed pixel coordinate, or nil if Claude said "none" or no tag was found.
+        /// The parsed pixel coordinate, or nil if the model said "none" or no tag was found.
         let coordinate: CGPoint?
         /// Short label describing the element (e.g. "run button"), or "none".
         let elementLabel: String?
@@ -779,7 +1246,7 @@ final class CompanionManager: ObservableObject {
         let screenNumber: Int?
     }
 
-    /// Parses a [POINT:x,y:label:screenN] or [POINT:none] tag from the end of Claude's response.
+    /// Parses a [POINT:x,y:label:screenN] or [POINT:none] tag from a response.
     /// Returns the spoken text (tag removed) and the optional coordinate + label + screen number.
     static func parsePointingCoordinates(from responseText: String) -> PointingParseResult {
         // Match [POINT:none] or [POINT:123,456:label] or [POINT:123,456:label:screen2]
@@ -820,207 +1287,5 @@ final class CompanionManager: ObservableObject {
             elementLabel: elementLabel,
             screenNumber: screenNumber
         )
-    }
-
-    // MARK: - Onboarding Video
-
-    /// Sets up the onboarding video player, starts playback, and schedules
-    /// the demo interaction at 40s. Called by BlueCursorView when onboarding starts.
-    func setupOnboardingVideo() {
-        guard let videoURL = URL(string: "https://stream.mux.com/e5jB8UuSrtFABVnTHCR7k3sIsmcUHCyhtLu1tzqLlfs.m3u8") else { return }
-
-        let player = AVPlayer(url: videoURL)
-        player.isMuted = false
-        player.volume = 0.0
-        self.onboardingVideoPlayer = player
-        self.showOnboardingVideo = true
-        self.onboardingVideoOpacity = 0.0
-
-        // Start playback immediately — the video plays while invisible,
-        // then we fade in both the visual and audio over 1s.
-        player.play()
-
-        // Wait for SwiftUI to mount the view, then set opacity to 1.
-        // The .animation modifier on the view handles the actual animation.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            self.onboardingVideoOpacity = 1.0
-            // Fade audio volume from 0 → 1 over 2s to match visual fade
-            self.fadeInVideoAudio(player: player, targetVolume: 1.0, duration: 2.0)
-        }
-
-        // At 40 seconds into the video, trigger the onboarding demo where
-        // Clicky flies to something interesting on screen and comments on it
-        let demoTriggerTime = CMTime(seconds: 40, preferredTimescale: 600)
-        onboardingDemoTimeObserver = player.addBoundaryTimeObserver(
-            forTimes: [NSValue(time: demoTriggerTime)],
-            queue: .main
-        ) { [weak self] in
-            ClickyAnalytics.trackOnboardingDemoTriggered()
-            self?.performOnboardingDemoInteraction()
-        }
-
-        // Fade out and clean up when the video finishes
-        onboardingVideoEndObserver = NotificationCenter.default.addObserver(
-            forName: AVPlayerItem.didPlayToEndTimeNotification,
-            object: player.currentItem,
-            queue: .main
-        ) { [weak self] _ in
-            guard let self else { return }
-            ClickyAnalytics.trackOnboardingVideoCompleted()
-            self.onboardingVideoOpacity = 0.0
-            // Wait for the 2s fade-out animation to complete before tearing down
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                self.tearDownOnboardingVideo()
-                // After the video disappears, stream in the prompt to try talking
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    self.startOnboardingPromptStream()
-                }
-            }
-        }
-    }
-
-    func tearDownOnboardingVideo() {
-        showOnboardingVideo = false
-        if let timeObserver = onboardingDemoTimeObserver {
-            onboardingVideoPlayer?.removeTimeObserver(timeObserver)
-            onboardingDemoTimeObserver = nil
-        }
-        onboardingVideoPlayer?.pause()
-        onboardingVideoPlayer = nil
-        if let observer = onboardingVideoEndObserver {
-            NotificationCenter.default.removeObserver(observer)
-            onboardingVideoEndObserver = nil
-        }
-    }
-
-    private func startOnboardingPromptStream() {
-        let message = "press control + option and introduce yourself"
-        onboardingPromptText = ""
-        showOnboardingPrompt = true
-        onboardingPromptOpacity = 0.0
-
-        withAnimation(.easeIn(duration: 0.4)) {
-            onboardingPromptOpacity = 1.0
-        }
-
-        var currentIndex = 0
-        Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { timer in
-            guard currentIndex < message.count else {
-                timer.invalidate()
-                // Auto-dismiss after 10 seconds
-                DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) {
-                    guard self.showOnboardingPrompt else { return }
-                    withAnimation(.easeOut(duration: 0.3)) {
-                        self.onboardingPromptOpacity = 0.0
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                        self.showOnboardingPrompt = false
-                        self.onboardingPromptText = ""
-                    }
-                }
-                return
-            }
-            let index = message.index(message.startIndex, offsetBy: currentIndex)
-            self.onboardingPromptText.append(message[index])
-            currentIndex += 1
-        }
-    }
-
-    /// Gradually raises an AVPlayer's volume from its current level to the
-    /// target over the specified duration, creating a smooth audio fade-in.
-    private func fadeInVideoAudio(player: AVPlayer, targetVolume: Float, duration: Double) {
-        let steps = 20
-        let stepInterval = duration / Double(steps)
-        let volumeIncrement = (targetVolume - player.volume) / Float(steps)
-        var stepsRemaining = steps
-
-        Timer.scheduledTimer(withTimeInterval: stepInterval, repeats: true) { timer in
-            stepsRemaining -= 1
-            player.volume += volumeIncrement
-
-            if stepsRemaining <= 0 {
-                timer.invalidate()
-                player.volume = targetVolume
-            }
-        }
-    }
-
-    // MARK: - Onboarding Demo Interaction
-
-    private static let onboardingDemoSystemPrompt = """
-    you're clicky, a small blue cursor buddy living on the user's screen. you're showing off during onboarding — look at their screen and find ONE specific, concrete thing to point at. pick something with a clear name or identity: a specific app icon (say its name), a specific word or phrase of text you can read, a specific filename, a specific button label, a specific tab title, a specific image you can describe. do NOT point at vague things like "a window" or "some text" — be specific about exactly what you see.
-
-    make a short quirky 3-6 word observation about the specific thing you picked — something fun, playful, or curious that shows you actually read/recognized it. no emojis ever. NEVER quote or repeat text you see on screen — just react to it. keep it to 6 words max, no exceptions.
-
-    CRITICAL COORDINATE RULE: you MUST only pick elements near the CENTER of the screen. your x coordinate must be between 20%-80% of the image width. your y coordinate must be between 20%-80% of the image height. do NOT pick anything in the top 20%, bottom 20%, left 20%, or right 20% of the screen. no menu bar items, no dock icons, no sidebar items, no items near any edge. only things clearly in the middle area of the screen. if the only interesting things are near the edges, pick something boring in the center instead.
-
-    respond with ONLY your short comment followed by the coordinate tag. nothing else. all lowercase.
-
-    format: your comment [POINT:x,y:label]
-
-    the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. origin (0,0) is top-left. x increases rightward, y increases downward.
-    """
-
-    /// Captures a screenshot and asks Claude to find something interesting to
-    /// point at, then triggers the buddy's flight animation. Used during
-    /// onboarding to demo the pointing feature while the intro video plays.
-    func performOnboardingDemoInteraction() {
-        // Don't interrupt an active voice response
-        guard voiceState == .idle || voiceState == .responding else { return }
-
-        Task {
-            do {
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
-
-                // Only send the cursor screen so Claude can't pick something
-                // on a different monitor that we can't point at.
-                guard let cursorScreenCapture = screenCaptures.first(where: { $0.isCursorScreen }) else {
-                    print("🎯 Onboarding demo: no cursor screen found")
-                    return
-                }
-
-                let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
-                let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
-
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: Self.onboardingDemoSystemPrompt,
-                    userPrompt: "look around my screen and find something interesting to point at",
-                    onTextChunk: { _ in }
-                )
-
-                let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
-
-                guard let pointCoordinate = parseResult.coordinate else {
-                    print("🎯 Onboarding demo: no element to point at")
-                    return
-                }
-
-                let screenshotWidth = CGFloat(cursorScreenCapture.screenshotWidthInPixels)
-                let screenshotHeight = CGFloat(cursorScreenCapture.screenshotHeightInPixels)
-                let displayWidth = CGFloat(cursorScreenCapture.displayWidthInPoints)
-                let displayHeight = CGFloat(cursorScreenCapture.displayHeightInPoints)
-                let displayFrame = cursorScreenCapture.displayFrame
-
-                let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-                let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-                let displayLocalY = clampedY * (displayHeight / screenshotHeight)
-                let appKitY = displayHeight - displayLocalY
-                let globalLocation = CGPoint(
-                    x: displayLocalX + displayFrame.origin.x,
-                    y: appKitY + displayFrame.origin.y
-                )
-
-                // Set custom bubble text so the pointing animation uses Claude's
-                // comment instead of a random phrase
-                detectedElementBubbleText = parseResult.spokenText
-                detectedElementScreenLocation = globalLocation
-                detectedElementDisplayFrame = displayFrame
-                print("🎯 Onboarding demo: pointing at \"\(parseResult.elementLabel ?? "element")\" — \"\(parseResult.spokenText)\"")
-            } catch {
-                print("⚠️ Onboarding demo error: \(error)")
-            }
-        }
     }
 }

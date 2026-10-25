@@ -1,0 +1,48 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+PROJECT_ROOT="${0:A:h:h}"
+LOCAL_PACKAGES_PATH="$PROJECT_ROOT/.build/local-packages"
+
+downloadPackageSnapshot() {
+    local packageName="$1"
+    local archiveURL="$2"
+    local packagePath="$LOCAL_PACKAGES_PATH/$packageName"
+
+    if [[ -f "$packagePath/Package.swift" ]]; then
+        return
+    fi
+
+    echo "Downloading pinned $packageName source snapshot…"
+    local temporaryArchive
+    temporaryArchive="$(mktemp -t "OpenClicky-$packageName").tar.gz"
+    local temporaryDirectory
+    temporaryDirectory="$(mktemp -d -t "OpenClicky-$packageName")"
+
+    curl \
+        --fail \
+        --http1.1 \
+        --location \
+        --retry 5 \
+        --retry-all-errors \
+        --connect-timeout 20 \
+        --speed-limit 1024 \
+        --speed-time 30 \
+        --output "$temporaryArchive" \
+        "$archiveURL"
+
+    tar -xzf "$temporaryArchive" --strip-components=1 -C "$temporaryDirectory"
+    rm -rf "$packagePath"
+    mkdir -p "$LOCAL_PACKAGES_PATH"
+    mv "$temporaryDirectory" "$packagePath"
+    rm -f "$temporaryArchive"
+}
+
+mkdir -p "$LOCAL_PACKAGES_PATH"
+downloadPackageSnapshot \
+    "FluidAudio" \
+    "https://codeload.github.com/FluidInference/FluidAudio/tar.gz/refs/tags/v0.17.7"
+downloadPackageSnapshot \
+    "Peekaboo" \
+    "https://codeload.github.com/openclaw/Peekaboo/tar.gz/refs/tags/v4.9.6"

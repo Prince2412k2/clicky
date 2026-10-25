@@ -8,10 +8,12 @@
 //
 
 import AppKit
+import ImageIO
 import ScreenCaptureKit
 
 struct CompanionScreenCapture {
     let imageData: Data
+    let frozenDisplayImageData: Data?
     let label: String
     let isCursorScreen: Bool
     let displayWidthInPoints: Int
@@ -24,10 +26,9 @@ struct CompanionScreenCapture {
 @MainActor
 enum CompanionScreenCaptureUtility {
 
-    /// Captures all connected displays as JPEG data, labeling each with
-    /// whether the user's cursor is on that screen. This gives the AI
-    /// full context across multiple monitors.
-    static func captureAllScreensAsJPEG() async throws -> [CompanionScreenCapture] {
+    /// Captures only the display containing the pointer. Avoiding unrelated
+    /// displays minimizes the screen content sent with a voice prompt.
+    static func captureScreenContainingPointerAsJPEG() async throws -> CompanionScreenCapture {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
 
         guard !content.displays.isEmpty else {
@@ -57,76 +58,79 @@ enum CompanionScreenCaptureUtility {
             }
         }
 
-        // Sort displays so the cursor screen is always first
-        let sortedDisplays = content.displays.sorted { displayA, displayB in
-            let frameA = nsScreenByDisplayID[displayA.displayID]?.frame ?? displayA.frame
-            let frameB = nsScreenByDisplayID[displayB.displayID]?.frame ?? displayB.frame
-            let aContainsCursor = frameA.contains(mouseLocation)
-            let bContainsCursor = frameB.contains(mouseLocation)
-            if aContainsCursor != bContainsCursor { return aContainsCursor }
-            return false
+        guard let display = content.displays.first(where: { display in
+            let frame = nsScreenByDisplayID[display.displayID]?.frame ?? display.frame
+            return frame.contains(mouseLocation)
+        }) ?? content.displays.first else {
+            throw NSError(domain: "CompanionScreenCapture", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "No display available for capture"])
         }
 
-        var capturedScreens: [CompanionScreenCapture] = []
+        // Use NSScreen.frame (AppKit coordinates, bottom-left origin) so
+        // displayFrame is in the same coordinate system as NSEvent.mouseLocation
+        // and the overlay window's screenFrame in BlueCursorView.
+        let displayFrame = nsScreenByDisplayID[display.displayID]?.frame
+            ?? CGRect(x: display.frame.origin.x, y: display.frame.origin.y,
+                      width: CGFloat(display.width), height: CGFloat(display.height))
+        let isCursorScreen = displayFrame.contains(mouseLocation)
 
-        for (displayIndex, display) in sortedDisplays.enumerated() {
-            // Use NSScreen.frame (AppKit coordinates, bottom-left origin) so
-            // displayFrame is in the same coordinate system as NSEvent.mouseLocation
-            // and the overlay window's screenFrame in BlueCursorView.
-            let displayFrame = nsScreenByDisplayID[display.displayID]?.frame
-                ?? CGRect(x: display.frame.origin.x, y: display.frame.origin.y,
-                          width: CGFloat(display.width), height: CGFloat(display.height))
-            let isCursorScreen = displayFrame.contains(mouseLocation)
+        let filter = SCContentFilter(display: display, excludingWindows: ownAppWindows)
 
-            let filter = SCContentFilter(display: display, excludingWindows: ownAppWindows)
+        let maxDimension = 1280
+        let frozenDisplayConfiguration = SCStreamConfiguration()
+        let nativeDisplayWidth = CGDisplayPixelsWide(display.displayID)
+        let nativeDisplayHeight = CGDisplayPixelsHigh(display.displayID)
+        frozenDisplayConfiguration.width = nativeDisplayWidth > 0
+            ? nativeDisplayWidth
+            : display.width
+        frozenDisplayConfiguration.height = nativeDisplayHeight > 0
+            ? nativeDisplayHeight
+            : display.height
 
-            let configuration = SCStreamConfiguration()
-            let maxDimension = 1280
-            let aspectRatio = CGFloat(display.width) / CGFloat(display.height)
-            if display.width >= display.height {
-                configuration.width = maxDimension
-                configuration.height = Int(CGFloat(maxDimension) / aspectRatio)
-            } else {
-                configuration.height = maxDimension
-                configuration.width = Int(CGFloat(maxDimension) * aspectRatio)
-            }
+        // Keep the frozen launcher lossless and Retina-sharp without sending
+        // that much larger image to the selected model.
+        let frozenDisplayImage = try await SCScreenshotManager.captureImage(
+            contentFilter: filter,
+            configuration: frozenDisplayConfiguration
+        )
+        OpenClickyDiagnostics.record("capture.complete", metadata: [
+            "display": display.displayID,
+            "logical": "\(Int(displayFrame.width))x\(Int(displayFrame.height))",
+            "nativeRequested": "\(frozenDisplayConfiguration.width)x\(frozenDisplayConfiguration.height)",
+            "nativeReceived": "\(frozenDisplayImage.width)x\(frozenDisplayImage.height)"
+        ])
 
-            let cgImage = try await SCScreenshotManager.captureImage(
-                contentFilter: filter,
-                configuration: configuration
-            )
-
-            guard let jpegData = NSBitmapImageRep(cgImage: cgImage)
-                    .representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
-                continue
-            }
-
-            let screenLabel: String
-            if sortedDisplays.count == 1 {
-                screenLabel = "user's screen (cursor is here)"
-            } else if isCursorScreen {
-                screenLabel = "screen \(displayIndex + 1) of \(sortedDisplays.count) — cursor is on this screen (primary focus)"
-            } else {
-                screenLabel = "screen \(displayIndex + 1) of \(sortedDisplays.count) — secondary screen"
-            }
-
-            capturedScreens.append(CompanionScreenCapture(
-                imageData: jpegData,
-                label: screenLabel,
-                isCursorScreen: isCursorScreen,
-                displayWidthInPoints: Int(displayFrame.width),
-                displayHeightInPoints: Int(displayFrame.height),
-                displayFrame: displayFrame,
-                screenshotWidthInPixels: configuration.width,
-                screenshotHeightInPixels: configuration.height
-            ))
-        }
-
-        guard !capturedScreens.isEmpty else {
+        guard let frozenDisplayImageData = NSBitmapImageRep(cgImage: frozenDisplayImage)
+                .representation(using: .png, properties: [:]),
+              let imageSource = CGImageSourceCreateWithData(
+                frozenDisplayImageData as CFData,
+                nil
+              ),
+              let analysisImage = CGImageSourceCreateThumbnailAtIndex(
+                imageSource,
+                0,
+                [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: maxDimension
+                ] as CFDictionary
+              ),
+              let jpegData = NSBitmapImageRep(cgImage: analysisImage)
+                .representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
             throw NSError(domain: "CompanionScreenCapture", code: -2,
-                          userInfo: [NSLocalizedDescriptionKey: "Failed to capture any screen"])
+                          userInfo: [NSLocalizedDescriptionKey: "Failed to encode the screen capture"])
         }
 
-        return capturedScreens
+        return CompanionScreenCapture(
+            imageData: jpegData,
+            frozenDisplayImageData: frozenDisplayImageData,
+            label: "screen containing the pointer",
+            isCursorScreen: isCursorScreen,
+            displayWidthInPoints: Int(displayFrame.width),
+            displayHeightInPoints: Int(displayFrame.height),
+            displayFrame: displayFrame,
+            screenshotWidthInPixels: analysisImage.width,
+            screenshotHeightInPixels: analysisImage.height
+        )
     }
 }

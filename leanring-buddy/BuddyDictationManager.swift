@@ -233,6 +233,8 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     )
     @Published private(set) var microphoneButtonRecordingStartedAt: Date?
     @Published private(set) var transcriptionProviderDisplayName = ""
+    @Published private(set) var selectedTranscriptionProvider: VoiceTranscriptionProvider
+    @Published private(set) var isPreparingTranscriptionProvider = false
     @Published var lastErrorMessage: String?
     @Published private(set) var currentPermissionProblem: BuddyDictationPermissionProblem?
 
@@ -262,7 +264,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         return AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined
     }
 
-    private let transcriptionProvider: any BuddyTranscriptionProvider
+    private var transcriptionProvider: any BuddyTranscriptionProvider
     private let audioEngine = AVAudioEngine()
     private var activeTranscriptionSession: (any BuddyStreamingTranscriptionSession)?
     private var activeStartSource: BuddyDictationStartSource?
@@ -281,10 +283,41 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     private var lastPermissionRequestCompletedAt: Date?
 
     override init() {
-        let transcriptionProvider = BuddyTranscriptionProviderFactory.makeDefaultProvider()
+        let (selectedTranscriptionProvider, transcriptionProvider) = BuddyTranscriptionProviderFactory.makeDefaultProvider()
+        self.selectedTranscriptionProvider = selectedTranscriptionProvider
         self.transcriptionProvider = transcriptionProvider
         self.transcriptionProviderDisplayName = transcriptionProvider.displayName
         super.init()
+    }
+
+    func setTranscriptionProvider(_ selectedTranscriptionProvider: VoiceTranscriptionProvider) {
+        guard !isDictationInProgress else { return }
+        let transcriptionProvider = BuddyTranscriptionProviderFactory.makeProvider(selectedTranscriptionProvider)
+        guard transcriptionProvider.isConfigured else {
+            lastErrorMessage = transcriptionProvider.unavailableExplanation
+            return
+        }
+        self.selectedTranscriptionProvider = selectedTranscriptionProvider
+        self.transcriptionProvider = transcriptionProvider
+        self.transcriptionProviderDisplayName = transcriptionProvider.displayName
+        BuddyTranscriptionProviderFactory.saveSelectedProvider(selectedTranscriptionProvider)
+        lastErrorMessage = nil
+        Task { await prepareSelectedTranscriptionProvider() }
+    }
+
+    func prepareSelectedTranscriptionProvider() async {
+        guard !isPreparingTranscriptionProvider else { return }
+        isPreparingTranscriptionProvider = true
+        defer { isPreparingTranscriptionProvider = false }
+        do {
+            try await transcriptionProvider.prepare()
+            lastErrorMessage = nil
+        } catch {
+            lastErrorMessage = userFacingErrorMessage(
+                from: error,
+                fallback: "couldn't prepare local transcription. try again."
+            )
+        }
     }
 
     func updateContextualKeyterms(_ contextualKeyterms: [String]) {
@@ -383,10 +416,8 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     ) async {
         guard !isDictationInProgress else { return }
 
-        print("🎙️ BuddyDictationManager: start requested (\(startSource))")
 
         if needsInitialPermissionPrompt {
-            print("🎙️ BuddyDictationManager: requesting initial permissions")
             NSApplication.shared.activate(ignoringOtherApps: true)
 
             do {
@@ -405,17 +436,14 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         isPreparingToRecord = true
 
         guard await requestMicrophoneAndSpeechPermissionsWithoutDuplicatePrompts() else {
-            print("🎙️ BuddyDictationManager: permissions missing or denied")
             isPreparingToRecord = false
             return
         }
         guard !Task.isCancelled else {
-            print("🎙️ BuddyDictationManager: start cancelled (shortcut released during permission check)")
             isPreparingToRecord = false
             return
         }
         guard pendingStartRequestIdentifier == startRequestIdentifier else {
-            print("🎙️ BuddyDictationManager: start request superseded")
             isPreparingToRecord = false
             return
         }
@@ -442,7 +470,6 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         lastRecordedAudioPowerSampleDate = .distantPast
 
         guard !Task.isCancelled else {
-            print("🎙️ BuddyDictationManager: start cancelled (shortcut released before recording began)")
             resetSessionState()
             return
         }
@@ -450,7 +477,6 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         do {
             try await startRecognitionSession()
             guard !Task.isCancelled else {
-                print("🎙️ BuddyDictationManager: start cancelled (shortcut released during session start)")
                 audioEngine.stop()
                 audioEngine.inputNode.removeTap(onBus: 0)
                 activeTranscriptionSession?.cancel()
@@ -461,14 +487,12 @@ final class BuddyDictationManager: NSObject, ObservableObject {
                 microphoneButtonRecordingStartedAt = Date()
             }
             isPreparingToRecord = false
-            print("🎙️ BuddyDictationManager: recognition session started")
         } catch {
             isPreparingToRecord = false
             lastErrorMessage = userFacingErrorMessage(
                 from: error,
                 fallback: "couldn't start voice input. try again."
             )
-            print("❌ BuddyDictationManager: failed to start recognition session (\(transcriptionProvider.displayName)): \(error)")
             resetSessionState()
         }
     }
@@ -482,7 +506,6 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         }
         guard !isFinalizingTranscript else { return }
 
-        print("🎙️ BuddyDictationManager: stop requested (\(expectedStartSource))")
 
         isRecordingFromMicrophoneButton = false
         isRecordingFromKeyboardShortcut = false
@@ -515,7 +538,6 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         activeTranscriptionSession?.cancel()
         activeTranscriptionSession = nil
 
-        print("🎙️ BuddyDictationManager: opening transcription provider \(transcriptionProvider.displayName)")
 
         let activeTranscriptionSession = try await transcriptionProvider.startStreamingSession(
             keyterms: buildTranscriptionKeyterms(),
@@ -544,7 +566,6 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         )
 
         self.activeTranscriptionSession = activeTranscriptionSession
-        print("🎙️ BuddyDictationManager: provider ready, starting audio engine")
 
         let inputNode = audioEngine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
@@ -569,7 +590,6 @@ final class BuddyDictationManager: NSObject, ObservableObject {
                 shouldSubmitFinalDraft: shouldAutomaticallySubmitFinalDraft
             )
         } else {
-            print("❌ Buddy dictation error (\(transcriptionProvider.displayName)): \(error)")
             lastErrorMessage = userFacingErrorMessage(
                 from: error,
                 fallback: "couldn't transcribe that. try again."
@@ -651,7 +671,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
     private func buildTranscriptionKeyterms() -> [String] {
         let baseKeyterms = [
-            "makesomething",
+            "OpenClicky",
             "Learning Buddy",
             "Codex",
             "Claude",
