@@ -29,7 +29,10 @@ if [[ ! -x "$EXECUTABLE_PATH" ]]; then
 fi
 
 rm -rf "$APP_PATH"
-mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
+mkdir -p \
+    "$APP_PATH/Contents/MacOS" \
+    "$APP_PATH/Contents/Frameworks" \
+    "$APP_PATH/Contents/Resources"
 cp "$EXECUTABLE_PATH" "$APP_PATH/Contents/MacOS/OpenClicky"
 
 # SwiftPM resource accessors expect dependency bundles beside the executable
@@ -38,6 +41,12 @@ cp "$EXECUTABLE_PATH" "$APP_PATH/Contents/MacOS/OpenClicky"
 for resourceBundle in "$BIN_PATH"/*.bundle(N); do
     ditto "$resourceBundle" "$APP_PATH/Contents/Resources/${resourceBundle:t}"
     ditto "$resourceBundle" "$APP_PATH/${resourceBundle:t}"
+done
+for framework in "$BIN_PATH"/*.framework(N); do
+    ditto "$framework" "$APP_PATH/Contents/Frameworks/${framework:t}"
+done
+for dynamicLibrary in "$BIN_PATH"/*.dylib(N); do
+    cp "$dynamicLibrary" "$APP_PATH/Contents/Frameworks/${dynamicLibrary:t}"
 done
 
 BUILD_NUMBER="${OPENCLICKY_BUILD_NUMBER:-$(git rev-list --count HEAD)}"
