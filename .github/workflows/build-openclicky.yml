@@ -15,10 +15,18 @@ jobs:
     timeout-minutes: 30
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      OPENCLICKY_TEAM_IDENTIFIER: 9889PDGCJW
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Validate lightweight SwiftPM development build
+        env:
+          # This artifact is discarded. Published bundles are signed later
+          # with the persistent Apple identity imported from repository secrets.
+          OPENCLICKY_SIGNING_IDENTITY: "-"
+        run: ./scripts/build-local
 
       - name: Build OpenClicky
         run: |
@@ -52,12 +60,57 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
-      - name: Ad-hoc sign application
+      - name: Import persistent signing identity
+        env:
+          SIGNING_CERTIFICATE_BASE64: ${{ secrets.APPLE_SIGNING_CERTIFICATE_BASE64 }}
+          SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_SIGNING_CERTIFICATE_PASSWORD }}
+          SIGNING_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_SIGNING_KEYCHAIN_PASSWORD }}
         run: |
+          if [[ -z "$SIGNING_CERTIFICATE_BASE64" || -z "$SIGNING_CERTIFICATE_PASSWORD" || -z "$SIGNING_KEYCHAIN_PASSWORD" ]]; then
+            echo "Persistent Apple signing secrets are required; refusing to publish an ad-hoc build."
+            exit 1
+          fi
+
+          CERTIFICATE_PATH="$RUNNER_TEMP/OpenClickySigningCertificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/OpenClickySigning.keychain-db"
+          echo "$SIGNING_CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$SIGNING_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$SIGNING_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$SIGNING_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$SIGNING_KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | awk -F '"' 'NR == 1 { print $2 }')"
+          if [[ -z "$SIGNING_IDENTITY" ]]; then
+            echo "No signing identity was imported."
+            exit 1
+          fi
+          echo "OPENCLICKY_SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+          echo "OPENCLICKY_SIGNING_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Sign application with persistent identity
+        run: |
+          if [[ "$OPENCLICKY_SIGNING_IDENTITY" == Developer\ ID\ Application:* ]]; then
+            TIMESTAMP_OPTION="--timestamp"
+          else
+            TIMESTAMP_OPTION="--timestamp=none"
+          fi
           codesign \
             --force \
             --deep \
-            --sign - \
+            --options runtime \
+            "$TIMESTAMP_OPTION" \
+            --keychain "$OPENCLICKY_SIGNING_KEYCHAIN" \
+            --sign "$OPENCLICKY_SIGNING_IDENTITY" \
             --entitlements leanring-buddy/leanring-buddy.entitlements \
             "$RUNNER_TEMP/OpenClickyPackageData/Build/Products/Release/OpenClicky.app"
 
@@ -65,6 +118,13 @@ jobs:
         run: |
           APP_PATH="$RUNNER_TEMP/OpenClickyPackageData/Build/Products/Release/OpenClicky.app"
           codesign --verify --deep --strict "$APP_PATH"
+          SIGNING_DETAILS="$(codesign -dv --verbose=4 "$APP_PATH" 2>&1)"
+          echo "$SIGNING_DETAILS"
+          echo "$SIGNING_DETAILS" | grep "TeamIdentifier=$OPENCLICKY_TEAM_IDENTIFIER"
+          if echo "$SIGNING_DETAILS" | grep -q "Signature=adhoc"; then
+            echo "Refusing to publish an ad-hoc signed application"
+            exit 1
+          fi
           if find "$APP_PATH" -iname '*XCTest*' -o -iname '*PostHog*' -o -iname '*Sparkle*' | grep -q .; then
             echo "Unexpected test or removed third-party framework found in app bundle"
             exit 1
@@ -107,3 +167,10 @@ jobs:
             --title "OpenClicky Alpha $GITHUB_RUN_NUMBER" \
             --notes "Automated OpenClicky alpha build from $GITHUB_SHA." \
             --prerelease
+
+      - name: Remove temporary signing keychain
+        if: always()
+        run: |
+          if [[ -n "${OPENCLICKY_SIGNING_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$OPENCLICKY_SIGNING_KEYCHAIN" || true
+          fi

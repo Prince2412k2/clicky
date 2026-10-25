@@ -36,7 +36,9 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 
 **Local speech models**: FluidAudio is pinned to `0.17.7`. Parakeet EOU uses 320 ms chunks and Kokoro uses v3 on macOS 15+ with the legacy runtime on macOS 14. Models download on first use, stay outside the app bundle, remain warm between interactions, and unload when the master switch turns off or the app exits.
 
-**Alpha updates**: GitHub Actions publishes versioned prereleases with `CFBundleVersion` set from the run number. `OpenClickyUpdater` discovers newer prereleases, validates the downloaded bundle, and installs to `/Applications/OpenClicky.app`. Stable TCC permission continuity requires every release to use the same Apple Developer ID signing identity; ad-hoc CI signing is only for prototypes.
+**Alpha updates**: GitHub Actions publishes versioned prereleases with `CFBundleVersion` set from the run number. Releases require a persistent Apple signing identity from team `9889PDGCJW`; CI refuses ad-hoc publication and verifies the resulting TeamIdentifier. `OpenClickyUpdater` rejects bundles from other teams, discovers newer prereleases, and installs to `/Applications/OpenClicky.app`.
+
+**Dual build paths**: The Xcode project remains the canonical IDE and CI project. `Package.swift` points at the same app sources for lightweight local development with Command Line Tools. `scripts/dev` downloads pinned dependency snapshots, builds incrementally with SwiftPM, packages a native app bundle, signs with the stable Apple Development identity, and relaunches from `.build/OpenClicky.app`.
 
 **Visual prompt launcher**: Control+Command freezes the current display at native resolution under a borderless full-screen layer while a smaller image is retained for model input. A Spotlight-style field receives focus immediately, the model infers whether to answer, guide, or request an approved action, and drawing controls stay collapsed until requested. Escape closes the complete launcher from any state.
 
@@ -78,10 +80,19 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
+| `Package.swift` | ~75 | Parallel SwiftPM app and test manifest for lightweight local builds. |
+| `scripts/build-local` | ~125 | Builds, bundles, resources, and signs a native app without Xcode. |
+| `scripts/dev` | ~15 | Rebuilds and relaunches the fixed-path development app. |
 
 ## Build & Run
 
 ```bash
+# Lightweight local build using Command Line Tools only
+./scripts/dev
+
+# Build and sign without launching
+./scripts/build-local
+
 # Open in Xcode
 open leanring-buddy.xcodeproj
 
@@ -92,6 +103,8 @@ open leanring-buddy.xcodeproj
 ```
 
 **Do NOT run `xcodebuild` from the terminal** — it invalidates TCC (Transparency, Consent, and Control) permissions and the app will need to re-request screen recording, accessibility, etc.
+
+The SwiftPM development path downloads pinned dependency snapshots into `.build/local-packages`, incrementally builds the executable, creates `.build/OpenClicky.app`, and signs it with team `9889PDGCJW`. Keep this bundle path and signing identity stable to preserve TCC permissions.
 
 ## Code Style & Conventions
 

@@ -45,7 +45,29 @@ Local speech models download on first use into Application Support, are verified
 
 The menu shows download, compilation, ready, and failure states for both local models. Alpha builds can check GitHub Releases, download an update, validate its bundle identity and signature, and replace the installation in `/Applications`.
 
-For reliable macOS permission continuity across updates, release builds ultimately need to be signed with the same Apple Developer ID certificate. Installing at a stable `/Applications/OpenClicky.app` path helps, but ad-hoc development signatures cannot guarantee that TCC will preserve permissions.
+For reliable macOS permission continuity, every build must use the same Apple signing team, bundle identifier, and app path. Local development builds use the installed Apple Development identity for team `9889PDGCJW`; public releases should use a persistent Developer ID identity from that team.
+
+## Lightweight local development
+
+OpenClicky can be built and relaunched without opening Xcode or invoking `xcodebuild`. Install Apple's Command Line Tools and ensure Swift 6.2 or newer is active, then run:
+
+```bash
+./scripts/dev
+```
+
+The first run downloads pinned source snapshots for FluidAudio and Peekaboo. Later builds are incremental. The script builds with SwiftPM, creates `.build/OpenClicky.app`, signs it with the installed Apple Development certificate, and always relaunches from that same path so macOS TCC permissions survive rebuilds.
+
+Useful commands:
+
+```bash
+./scripts/build-local       # Build, bundle, and sign without launching
+swift test                  # Run the SwiftPM test target
+OPENCLICKY_CONFIGURATION=release ./scripts/dev
+```
+
+The Xcode project remains available for contributors who prefer Xcode. Both build paths use `org.openclicky.app` and the same source files.
+
+GitHub alpha releases are signed with the same team identity using the encrypted `APPLE_SIGNING_CERTIFICATE_BASE64`, `APPLE_SIGNING_CERTIFICATE_PASSWORD`, and `APPLE_SIGNING_KEYCHAIN_PASSWORD` repository secrets. CI refuses to publish if these credentials are unavailable or if the resulting bundle does not report team `9889PDGCJW`.
 
 ## Build
 

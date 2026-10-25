@@ -1,0 +1,15 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+PROJECT_ROOT="${0:A:h:h}"
+APP_PATH="${OPENCLICKY_APP_PATH:-$PROJECT_ROOT/.build/OpenClicky.app}"
+
+"$PROJECT_ROOT/scripts/build-local"
+
+# Relaunch from the exact same bundle path after every build. Combined with
+# the stable certificate and bundle identifier, this preserves TCC identity.
+pkill -x OpenClicky 2>/dev/null || true
+open "$APP_PATH"
+
+echo "Launched $APP_PATH"

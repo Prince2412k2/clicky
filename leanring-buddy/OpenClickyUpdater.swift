@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import Security
 
 enum OpenClickyUpdateState: Equatable {
     case idle
@@ -22,6 +23,7 @@ final class OpenClickyUpdater: ObservableObject {
         string: "https://api.github.com/repos/Prince2412k2/clicky/releases?per_page=10"
     )!
     private static let expectedBundleIdentifier = "org.openclicky.app"
+    private static let expectedSigningTeamIdentifier = "9889PDGCJW"
 
     var isRunningFromApplications: Bool {
         Bundle.main.bundleURL.path.hasPrefix("/Applications/")
@@ -150,10 +152,37 @@ final class OpenClickyUpdater: ObservableObject {
               bundle.bundleIdentifier == Self.expectedBundleIdentifier else {
             throw Self.updaterError("The downloaded application has an unexpected identity.")
         }
+        guard try signingTeamIdentifier(for: applicationURL) == Self.expectedSigningTeamIdentifier else {
+            throw Self.updaterError("The downloaded application was not signed by the OpenClicky team.")
+        }
         let downloadedBuild = Int(bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0") ?? 0
         guard downloadedBuild > currentBuild else {
             throw Self.updaterError("The downloaded build is not newer than the installed build.")
         }
+    }
+
+    private func signingTeamIdentifier(for applicationURL: URL) throws -> String? {
+        var staticCode: SecStaticCode?
+        let createStatus = SecStaticCodeCreateWithPath(
+            applicationURL as CFURL,
+            SecCSFlags(rawValue: 0),
+            &staticCode
+        )
+        guard createStatus == errSecSuccess, let staticCode else {
+            throw Self.updaterError("The downloaded application signature could not be read.")
+        }
+
+        var signingInformation: CFDictionary?
+        let informationStatus = SecCodeCopySigningInformation(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &signingInformation
+        )
+        guard informationStatus == errSecSuccess,
+              let signingInformation = signingInformation as? [CFString: Any] else {
+            throw Self.updaterError("The downloaded application signing identity could not be verified.")
+        }
+        return signingInformation[kSecCodeInfoTeamIdentifier] as? String
     }
 
     private func runProcess(executableURL: URL, arguments: [String]) async throws {
