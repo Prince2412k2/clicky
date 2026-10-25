@@ -40,3 +40,15 @@ enum GuidedSessionParser {
         return GuidedSessionParseResult(responseText: cleanedResponse, directive: directive)
     }
 }
+
+enum GuidedSessionPolicy {
+    static func directiveBeforeActionVerification(
+        modelDirective: GuidedSessionDirective?,
+        hasPendingAction: Bool
+    ) -> GuidedSessionDirective? {
+        // A requested action has not completed until OpenClicky executes it and
+        // verifies the resulting UI with a fresh observation. Ending earlier
+        // also clears walkthrough-wide approval before the action can continue.
+        hasPendingAction ? .continueGuiding : modelDirective
+    }
+}

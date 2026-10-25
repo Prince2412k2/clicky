@@ -785,15 +785,19 @@ final class CompanionManager: ObservableObject {
                     scheduleAnnotationClearIfNeeded()
                 }
 
+                let resolvedDirective = resolvedGuidedDirective(
+                    explicitDirective: guidedParseResult.directive,
+                    prompt: transcript,
+                    isGuidedFollowUp: isGuidedFollowUp,
+                    interactionMode: interactionMode,
+                    hasVisualTarget: !screenAnnotations.isEmpty
+                        || parseResult.coordinate != nil
+                        || computerActionParseResult.clickAction != nil
+                )
                 updateGuidedSession(
-                    directive: resolvedGuidedDirective(
-                        explicitDirective: guidedParseResult.directive,
-                        prompt: transcript,
-                        isGuidedFollowUp: isGuidedFollowUp,
-                        interactionMode: interactionMode,
-                        hasVisualTarget: !screenAnnotations.isEmpty
-                            || parseResult.coordinate != nil
-                            || computerActionParseResult.clickAction != nil
+                    directive: GuidedSessionPolicy.directiveBeforeActionVerification(
+                        modelDirective: resolvedDirective,
+                        hasPendingAction: computerActionParseResult.clickAction != nil
                     ),
                     originalPrompt: transcript,
                     isGuidedFollowUp: isGuidedFollowUp

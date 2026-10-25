@@ -120,6 +120,15 @@ struct leanring_buddyTests {
         #expect(result.responseText == "Your texture is connected.")
     }
 
+    @Test func pendingActionKeepsWalkthroughApprovalAliveUntilVerification() {
+        let directive = GuidedSessionPolicy.directiveBeforeActionVerification(
+            modelDirective: .done,
+            hasPendingAction: true
+        )
+
+        #expect(directive == .continueGuiding)
+    }
+
     @Test func parsesApprovedClickRequestAndRemovesActionTag() {
         let result = ComputerActionParser.parse(
             from: "I can open that panel for you. [ACTION:click:420,180:open shader panel] [GUIDE:continue]"
