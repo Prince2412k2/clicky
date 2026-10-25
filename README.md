@@ -45,7 +45,7 @@ Local speech models download on first use into Application Support, are verified
 
 The menu shows download, compilation, ready, and failure states for both local models. Alpha builds can check GitHub Releases, download an update, validate its bundle identity and signature, and replace the installation in `/Applications`.
 
-For reliable macOS permission continuity, every build must use the same Apple signing team, bundle identifier, and app path. Local development builds use the installed Apple Development identity for team `9889PDGCJW`; public releases should use a persistent Developer ID identity from that team.
+For reliable macOS permission continuity, every build must use the same Apple signing team, bundle identifier, and app path. Local development builds use the installed Apple Development identity for team `935NAK66J6`; public releases should use a persistent Developer ID identity from that team.
 
 ## Lightweight local development
 
@@ -67,7 +67,7 @@ OPENCLICKY_CONFIGURATION=release ./scripts/dev
 
 The Xcode project remains available for contributors who prefer Xcode. Both build paths use `org.openclicky.app` and the same source files.
 
-GitHub alpha releases are signed with the same team identity using the encrypted `APPLE_SIGNING_CERTIFICATE_BASE64`, `APPLE_SIGNING_CERTIFICATE_PASSWORD`, and `APPLE_SIGNING_KEYCHAIN_PASSWORD` repository secrets. CI refuses to publish if these credentials are unavailable or if the resulting bundle does not report team `9889PDGCJW`.
+GitHub alpha releases are signed with the same team identity using the encrypted `APPLE_SIGNING_CERTIFICATE_BASE64`, `APPLE_SIGNING_CERTIFICATE_PASSWORD`, and `APPLE_SIGNING_KEYCHAIN_PASSWORD` repository secrets. CI refuses to publish if these credentials are unavailable or if the resulting bundle does not report team `935NAK66J6`.
 
 ## Build
 

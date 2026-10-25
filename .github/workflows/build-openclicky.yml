@@ -15,7 +15,7 @@ jobs:
     timeout-minutes: 30
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-      OPENCLICKY_TEAM_IDENTIFIER: 9889PDGCJW
+      OPENCLICKY_TEAM_IDENTIFIER: 935NAK66J6
 
     steps:
       - name: Check out repository

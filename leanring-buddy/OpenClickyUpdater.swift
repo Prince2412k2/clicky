@@ -23,7 +23,7 @@ final class OpenClickyUpdater: ObservableObject {
         string: "https://api.github.com/repos/Prince2412k2/clicky/releases?per_page=10"
     )!
     private static let expectedBundleIdentifier = "org.openclicky.app"
-    private static let expectedSigningTeamIdentifier = "9889PDGCJW"
+    private static let expectedSigningTeamIdentifier = "935NAK66J6"
 
     var isRunningFromApplications: Bool {
         Bundle.main.bundleURL.path.hasPrefix("/Applications/")

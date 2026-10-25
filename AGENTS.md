@@ -36,7 +36,7 @@ Privacy-first macOS menu bar companion app. Control+Option provides push-to-talk
 
 **Local speech models**: FluidAudio is pinned to `0.17.7`. Parakeet EOU uses 320 ms chunks and Kokoro uses v3 on macOS 15+ with the legacy runtime on macOS 14. Models download on first use, stay outside the app bundle, remain warm between interactions, and unload when the master switch turns off or the app exits.
 
-**Alpha updates**: GitHub Actions publishes versioned prereleases with `CFBundleVersion` set from the run number. Releases require a persistent Apple signing identity from team `9889PDGCJW`; CI refuses ad-hoc publication and verifies the resulting TeamIdentifier. `OpenClickyUpdater` rejects bundles from other teams, discovers newer prereleases, and installs to `/Applications/OpenClicky.app`.
+**Alpha updates**: GitHub Actions publishes versioned prereleases with `CFBundleVersion` set from the run number. Releases require a persistent Apple signing identity from team `935NAK66J6`; CI refuses ad-hoc publication and verifies the resulting TeamIdentifier. `OpenClickyUpdater` rejects bundles from other teams, discovers newer prereleases, and installs to `/Applications/OpenClicky.app`.
 
 **Dual build paths**: The Xcode project remains the canonical IDE and CI project. `Package.swift` points at the same app sources for lightweight local development with Command Line Tools. `scripts/dev` downloads pinned dependency snapshots, builds incrementally with SwiftPM, packages a native app bundle, signs with the stable Apple Development identity, and relaunches from `.build/OpenClicky.app`.
 
@@ -104,7 +104,7 @@ open leanring-buddy.xcodeproj
 
 **Do NOT run `xcodebuild` from the terminal** — it invalidates TCC (Transparency, Consent, and Control) permissions and the app will need to re-request screen recording, accessibility, etc.
 
-The SwiftPM development path downloads pinned dependency snapshots into `.build/local-packages`, incrementally builds the executable, creates `.build/OpenClicky.app`, and signs it with team `9889PDGCJW`. Keep this bundle path and signing identity stable to preserve TCC permissions.
+The SwiftPM development path downloads pinned dependency snapshots into `.build/local-packages`, incrementally builds the executable, creates `.build/OpenClicky.app`, and signs it with team `935NAK66J6`. Keep this bundle path and signing identity stable to preserve TCC permissions.
 
 ## Code Style & Conventions
 
