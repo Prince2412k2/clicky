@@ -118,10 +118,12 @@ codesign \
     --entitlements "$ENTITLEMENTS_PATH" \
     "$APP_PATH"
 codesign --verify --deep --strict "$APP_PATH"
-SIGNING_DETAILS="$(codesign -dv --verbose=4 "$APP_PATH" 2>&1)"
-if ! echo "$SIGNING_DETAILS" | grep -q "TeamIdentifier=$TEAM_IDENTIFIER"; then
-    echo "The signed app does not belong to expected team $TEAM_IDENTIFIER." >&2
-    exit 1
+if [[ "$SIGNING_IDENTITY" != "-" ]]; then
+    SIGNING_DETAILS="$(codesign -dv --verbose=4 "$APP_PATH" 2>&1)"
+    if ! echo "$SIGNING_DETAILS" | grep -q "TeamIdentifier=$TEAM_IDENTIFIER"; then
+        echo "The signed app does not belong to expected team $TEAM_IDENTIFIER." >&2
+        exit 1
+    fi
 fi
 
 echo "Built $APP_PATH"
